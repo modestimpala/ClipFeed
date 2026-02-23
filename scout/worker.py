@@ -7,11 +7,14 @@ Discovers, monitors, and evaluates video content for ingestion.
 import json
 import logging
 import os
+import random
+import re
 import signal
 import sqlite3
 import subprocess
 import time
 import uuid
+from collections import defaultdict
 
 import ollama_client
 
@@ -25,6 +28,11 @@ log = logging.getLogger("scout")
 DB_PATH = os.getenv("DB_PATH", "/data/clipfeed.db")
 SCOUT_INTERVAL = int(os.getenv("SCOUT_INTERVAL", "21600"))
 LLM_THRESHOLD = float(os.getenv("LLM_THRESHOLD", "6"))
+SCOUT_OLLAMA_AUTO_PULL = os.getenv("SCOUT_OLLAMA_AUTO_PULL", "1").lower() not in ("0", "false", "no")
+SCOUT_MAX_LLM_PER_CYCLE = int(os.getenv("SCOUT_MAX_LLM_PER_CYCLE", "40"))
+SCOUT_MAX_LLM_PER_SOURCE = int(os.getenv("SCOUT_MAX_LLM_PER_SOURCE", "5"))
+SCOUT_MAX_LLM_PER_CHANNEL = int(os.getenv("SCOUT_MAX_LLM_PER_CHANNEL", "3"))
+SCOUT_EXPLORATION_RATIO = float(os.getenv("SCOUT_EXPLORATION_RATIO", "0.2"))
 
 shutdown = False
 
@@ -47,6 +55,63 @@ def open_db():
     db.execute("PRAGMA foreign_keys=ON")
     db.row_factory = sqlite3.Row
     return db
+
+
+def _tokenize(text: str) -> set[str]:
+    return {t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(t) >= 3}
+
+
+def _duration_fit(duration_seconds: float | None) -> float:
+    if duration_seconds is None:
+        return 0.5
+    d = float(duration_seconds)
+    if d <= 15:
+        return 0.2
+    if d <= 60:
+        return 0.6 + (d - 15) / 45 * 0.4
+    if d <= 180:
+        return 1.0 - (d - 60) / 120 * 0.2
+    if d <= 600:
+        return 0.8 - (d - 180) / 420 * 0.6
+    return 0.1
+
+
+def _heuristic_rank_score(row: sqlite3.Row, topic_tokens: set[str], channel_seen_count: int) -> float:
+    title = row["title"] or ""
+    channel = row["channel_name"] or ""
+    text_tokens = _tokenize(f"{title} {channel}")
+    overlap = len(text_tokens & topic_tokens) / max(1, len(topic_tokens))
+    topic_score = min(1.0, overlap * 2.5)
+    duration_score = _duration_fit(row["duration_seconds"])
+    novelty_score = 1.0 / (1.0 + max(0, channel_seen_count))
+    return 0.55 * topic_score + 0.25 * duration_score + 0.20 * novelty_score
+
+
+def _pick_with_caps(
+    rows: list[sqlite3.Row],
+    limit: int,
+    source_counts: defaultdict[str, int],
+    channel_counts: defaultdict[str, int],
+    selected_ids: set[str],
+) -> list[sqlite3.Row]:
+    picked: list[sqlite3.Row] = []
+    for row in rows:
+        if len(picked) >= limit:
+            break
+        cid = row["id"]
+        if cid in selected_ids:
+            continue
+        source_id = row["scout_source_id"] or ""
+        channel_key = (row["channel_name"] or "").strip().lower() or f"__nochannel__:{cid}"
+        if source_counts[source_id] >= SCOUT_MAX_LLM_PER_SOURCE:
+            continue
+        if channel_counts[channel_key] >= SCOUT_MAX_LLM_PER_CHANNEL:
+            continue
+        picked.append(row)
+        selected_ids.add(cid)
+        source_counts[source_id] += 1
+        channel_counts[channel_key] += 1
+    return picked
 
 
 def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -> None:
@@ -194,22 +259,78 @@ def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -
 
 
 def evaluate_candidates(db: sqlite3.Connection) -> None:
-    """Score pending candidates via Ollama, set approved/rejected."""
+    """Score pending candidates via Ollama with lightweight curation and diversity caps."""
     if not ollama_client.is_available():
         log.info("Ollama unavailable, skipping candidate evaluation")
         return
+    if not ollama_client.ensure_model(auto_pull=SCOUT_OLLAMA_AUTO_PULL):
+        log.info("Ollama model unavailable, skipping candidate evaluation")
+        return
 
     cur = db.execute(
-        "SELECT id, url, platform, external_id, title, channel_name FROM scout_candidates WHERE status = 'pending'"
+        """
+        SELECT id, scout_source_id, url, platform, external_id, title, channel_name, duration_seconds, created_at
+        FROM scout_candidates
+        WHERE status = 'pending'
+        """
     )
     candidates = cur.fetchall()
+    if not candidates:
+        return
 
     topic_rows = db.execute(
         "SELECT name FROM topics ORDER BY clip_count DESC LIMIT 10"
     ).fetchall()
     top_topics = [r["name"] for r in topic_rows]
+    topic_tokens = _tokenize(" ".join(top_topics))
 
-    for row in candidates:
+    channel_seen = {
+        r["channel_name"]: r["cnt"]
+        for r in db.execute(
+            """
+            SELECT channel_name, COUNT(*) AS cnt
+            FROM sources
+            WHERE channel_name IS NOT NULL AND TRIM(channel_name) <> ''
+            GROUP BY channel_name
+            """
+        ).fetchall()
+    }
+
+    ranked = sorted(
+        candidates,
+        key=lambda row: _heuristic_rank_score(row, topic_tokens, channel_seen.get(row["channel_name"] or "", 0)),
+        reverse=True,
+    )
+
+    max_eval = min(max(1, SCOUT_MAX_LLM_PER_CYCLE), len(ranked))
+    exploration_ratio = max(0.0, min(0.5, SCOUT_EXPLORATION_RATIO))
+    explore_slots = min(max_eval, int(round(max_eval * exploration_ratio)))
+    exploit_slots = max_eval - explore_slots
+
+    source_counts: defaultdict[str, int] = defaultdict(int)
+    channel_counts: defaultdict[str, int] = defaultdict(int)
+    selected_ids: set[str] = set()
+
+    selected = _pick_with_caps(ranked, exploit_slots, source_counts, channel_counts, selected_ids)
+
+    remaining = [r for r in ranked if r["id"] not in selected_ids]
+    random.shuffle(remaining)
+    selected.extend(_pick_with_caps(remaining, explore_slots, source_counts, channel_counts, selected_ids))
+
+    if not selected:
+        log.info("No pending candidates passed diversity caps for this cycle")
+        return
+
+    log.info(
+        "Evaluating %d/%d pending candidates (explore=%d, per_source<=%d, per_channel<=%d)",
+        len(selected),
+        len(candidates),
+        explore_slots,
+        SCOUT_MAX_LLM_PER_SOURCE,
+        SCOUT_MAX_LLM_PER_CHANNEL,
+    )
+
+    for row in selected:
         if shutdown:
             return
 
@@ -218,6 +339,10 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
         channel = row["channel_name"] or ""
 
         score = ollama_client.evaluate_candidate(title, channel, top_topics)
+        if score is None:
+            log.debug("Candidate %s left pending (LLM unavailable/parse failure)", cand_id[:8])
+            continue
+
         db.execute(
             "UPDATE scout_candidates SET llm_score = ? WHERE id = ?",
             (score, cand_id),
@@ -320,10 +445,12 @@ def process_triggers(db: sqlite3.Connection) -> bool:
 
 def main():
     log.info(
-        "Scout worker started (interval=%ds, threshold=%.1f, trigger_poll=%ds)",
+        "Scout worker started (interval=%ds, threshold=%.1f, trigger_poll=%ds, max_llm=%d, auto_pull=%s)",
         SCOUT_INTERVAL,
         LLM_THRESHOLD,
         TRIGGER_POLL_INTERVAL,
+        SCOUT_MAX_LLM_PER_CYCLE,
+        SCOUT_OLLAMA_AUTO_PULL,
     )
 
     db = open_db()

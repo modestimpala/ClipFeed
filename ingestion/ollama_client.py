@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import requests
 
@@ -18,6 +19,7 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 # Timeouts
 AVAILABILITY_TIMEOUT = 3
 GENERATE_TIMEOUT = 30
+PULL_TIMEOUT = int(os.getenv("OLLAMA_PULL_TIMEOUT", "900"))
 
 
 def is_available() -> bool:
@@ -31,6 +33,65 @@ def is_available() -> bool:
         return True
     except requests.RequestException as e:
         logger.debug("Ollama unavailable: %s", e)
+        return False
+
+
+def model_exists(model: str | None = None) -> bool:
+    """Check if a model is present in Ollama model store."""
+    model = (model or OLLAMA_MODEL).strip()
+    if not model:
+        return False
+    try:
+        r = requests.get(
+            f"{OLLAMA_URL}/api/tags",
+            timeout=AVAILABILITY_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+        models = data.get("models", []) if isinstance(data, dict) else []
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name == model:
+                return True
+        return False
+    except requests.RequestException as e:
+        logger.warning("Ollama model check failed: %s", e)
+        return False
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning("Ollama /api/tags parse error: %s", e)
+        return False
+
+
+def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
+    """Ensure model exists; optionally pull it when missing."""
+    model = (model or OLLAMA_MODEL).strip()
+    if not model:
+        logger.warning("No Ollama model configured")
+        return False
+
+    if model_exists(model):
+        return True
+
+    if not auto_pull:
+        logger.warning("Ollama model '%s' is missing", model)
+        return False
+
+    logger.info("Ollama model '%s' not found; pulling now (this may take a while)", model)
+    start = time.time()
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/pull",
+            json={"name": model, "stream": False},
+            timeout=PULL_TIMEOUT,
+        )
+        r.raise_for_status()
+        elapsed = time.time() - start
+        logger.info("Ollama model '%s' pull complete in %.1fs", model, elapsed)
+        return model_exists(model)
+    except requests.RequestException as e:
+        logger.warning("Ollama model pull failed for '%s': %s", model, e)
         return False
 
 
@@ -126,10 +187,10 @@ def evaluate_candidate(
     title: str,
     channel: str,
     top_topics: list,
-) -> float:
+) -> float | None:
     """
     Rate relevance 1-10 given user interests.
-    Returns 0.0 on failure.
+    Returns None on request/parse failure.
     """
     topics_str = ", ".join(str(t) for t in top_topics) if top_topics else "(none)"
     prompt = (
@@ -139,7 +200,7 @@ def evaluate_candidate(
     )
     result = generate(prompt)
     if not result:
-        return 0.0
+        return None
 
     match = re.search(r"(\d+(?:\.\d+)?)", result.strip())
     if match:
@@ -150,4 +211,4 @@ def evaluate_candidate(
             pass
 
     logger.warning("Ollama evaluate_candidate: could not parse score from %r", result[:100])
-    return 0.0
+    return None
