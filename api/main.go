@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -143,6 +144,7 @@ func main() {
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
 	r.Get("/api/search", app.handleSearch)
+	r.Get("/api/topics", app.handleGetTopics)
 
 	r.Group(func(r chi.Router) {
 		r.Use(app.authMiddleware)
@@ -723,6 +725,45 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 		"display_name": displayName, "avatar_url": avatarURL,
 		"created_at": createdAt,
 	})
+}
+
+func (a *App) handleGetTopics(w http.ResponseWriter, r *http.Request) {
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT topics FROM clips WHERE status = 'ready' AND topics != '[]'
+	`)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to fetch topics"})
+		return
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var topicsJSON string
+		rows.Scan(&topicsJSON)
+		var topics []string
+		json.Unmarshal([]byte(topicsJSON), &topics)
+		for _, t := range topics {
+			counts[t]++
+		}
+	}
+
+	type topicEntry struct {
+		Name      string `json:"name"`
+		ClipCount int    `json:"clip_count"`
+	}
+	var result []topicEntry
+	for name, count := range counts {
+		result = append(result, topicEntry{Name: name, ClipCount: count})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ClipCount > result[j].ClipCount
+	})
+	if len(result) > 20 {
+		result = result[:20]
+	}
+
+	writeJSON(w, 200, map[string]interface{}{"topics": result})
 }
 
 func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
