@@ -153,14 +153,19 @@ def main() -> None:
         g_test,
     ) = _split_by_groups(X, y, group_sizes, test_size=0.2)
 
+    # LightGBM LambdaRank expects integer relevance labels.
+    # Our labels are {0.0, 0.5, 1.0}, so map to graded relevance {0, 1, 2}.
+    y_train_rank = np.clip(np.rint(y_train * 2.0), 0, 2).astype(np.int32)
+
     model = LGBMRanker(
         objective="lambdarank",
         n_estimators=100,
         num_leaves=31,
         learning_rate=0.1,
+        label_gain=[0, 1, 2],
         random_state=42,
     )
-    model.fit(X_train, y_train, group=g_train)
+    model.fit(X_train, y_train_rank, group=g_train)
 
     y_pred = model.predict(X_test)
     ndcg = _ndcg_at_k(y_test, y_pred, g_test, k=10)

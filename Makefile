@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score clean
+.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score test-api-docker clean
 
 up:
 	docker compose up -d
@@ -32,6 +32,9 @@ lifecycle:
 
 score:
 	docker compose exec score-updater python score_updater.py
+
+test-api-docker:
+	docker run --rm -v $(PWD)/api:/src -w /src golang:1.24 sh -lc 'go test ./...'
 
 dev-api:
 	cd api && go run .

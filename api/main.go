@@ -38,6 +38,7 @@ type App struct {
 
 type Config struct {
 	DBPath        string
+	L2RModelPath  string
 	MinioEndpoint string
 	MinioAccess   string
 	MinioSecret   string
@@ -50,6 +51,7 @@ type Config struct {
 func loadConfig() Config {
 	return Config{
 		DBPath:        getEnv("DB_PATH", "/data/clipfeed.db"),
+		L2RModelPath:  getEnv("L2R_MODEL_PATH", "/data/l2r_model.json"),
 		MinioEndpoint: getEnv("MINIO_ENDPOINT", "localhost:9000"),
 		MinioAccess:   getEnv("MINIO_ACCESS_KEY", "clipfeed"),
 		MinioSecret:   getEnv("MINIO_SECRET_KEY", "changeme123"),
