@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { useInstallPrompt } from '../../../shared/hooks/useInstallPrompt';
 import { CookieSection } from './CookieSection';
+import { TopicWeights } from './TopicWeights';
 
 export function SettingsScreen({ onLogout }) {
   const { canInstall, showIOSGuide, installed, promptInstall } = useInstallPrompt();
@@ -11,10 +12,17 @@ export function SettingsScreen({ onLogout }) {
     min_clip_seconds: 5,
     max_clip_seconds: 120,
     autoplay: true,
+    topic_weights: {},
   });
 
   useEffect(() => {
-    api.getProfile().catch(() => {});
+    api.getProfile()
+      .then((data) => {
+        if (data.preferences) {
+          setPrefs((prev) => ({ ...prev, ...data.preferences }));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   function handleChange(key, value) {
@@ -78,6 +86,14 @@ export function SettingsScreen({ onLogout }) {
             onChange={(e) => handleChange('max_clip_seconds', parseInt(e.target.value, 10))}
           />
         </div>
+      </div>
+
+      <div className="settings-section">
+        <h3>Topic Preferences</h3>
+        <TopicWeights
+          currentWeights={prefs.topic_weights}
+          onWeightsChange={(tw) => setPrefs((prev) => ({ ...prev, topic_weights: tw }))}
+        />
       </div>
 
       {api.getToken() && <CookieSection />}
