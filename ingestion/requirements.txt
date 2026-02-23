@@ -1,0 +1,8 @@
+redis==5.0.4
+psycopg2-binary==2.9.9
+minio==7.2.7
+yt-dlp==2024.4.9
+faster-whisper==1.0.3
+keybert==0.8.4
+sentence-transformers==2.7.0
+meilisearch==0.31.3
