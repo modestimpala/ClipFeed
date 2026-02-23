@@ -111,6 +111,55 @@ func (a *App) handleListScoutCandidates(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, 200, map[string]interface{}{"candidates": candidates})
 }
 
+func (a *App) handleUpdateScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	sourceID := chi.URLParam(r, "id")
+
+	var req struct {
+		IsActive *bool `json:"is_active"`
+		Interval *int  `json:"check_interval_hours"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.IsActive != nil {
+		active := 0
+		if *req.IsActive {
+			active = 1
+		}
+		a.db.ExecContext(r.Context(),
+			`UPDATE scout_sources SET is_active = ? WHERE id = ? AND user_id = ?`,
+			active, sourceID, userID)
+	}
+	if req.Interval != nil && *req.Interval > 0 {
+		a.db.ExecContext(r.Context(),
+			`UPDATE scout_sources SET check_interval_hours = ? WHERE id = ? AND user_id = ?`,
+			*req.Interval, sourceID, userID)
+	}
+
+	writeJSON(w, 200, map[string]string{"status": "updated"})
+}
+
+func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	sourceID := chi.URLParam(r, "id")
+
+	res, err := a.db.ExecContext(r.Context(),
+		`DELETE FROM scout_sources WHERE id = ? AND user_id = ?`, sourceID, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to delete source"})
+		return
+	}
+	affected, _ := res.RowsAffected()
+	if affected == 0 {
+		writeJSON(w, 404, map[string]string{"error": "source not found"})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
 func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	candidateID := chi.URLParam(r, "id")
