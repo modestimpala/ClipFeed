@@ -61,10 +61,16 @@ services:
       MINIO_USE_SSL: "false"
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       MAX_CONCURRENT_JOBS: ${MAX_WORKERS:-2}
+      FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
+      WHISPER_THREADS: ${WHISPER_THREADS:-4}
       CLIP_TTL_DAYS: ${CLIP_TTL_DAYS:-30}
     volumes:
       - db_data:/data
       - worker_tmp:/tmp/clipfeed
+    deploy:
+      resources:
+        limits:
+          cpus: "${WORKER_CPUS:-4}"
 
   # --- Score Updater ---
   score-updater:
