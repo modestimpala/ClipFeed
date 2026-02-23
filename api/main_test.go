@@ -94,14 +94,14 @@ func TestDetectPlatform(t *testing.T) {
 		url      string
 		expected string
 	}{
-		{"https://www.youtube.com/watch?v=abc123", "youtube"},
-		{"https://youtu.be/abc123", "youtube"},
-		{"https://www.vimeo.com/123456", "vimeo"},
-		{"https://www.tiktok.com/@user/video/123", "tiktok"},
-		{"https://www.instagram.com/reel/abc123", "instagram"},
-		{"https://twitter.com/user/status/123", "twitter"},
-		{"https://x.com/user/status/123", "twitter"},
-		{"https://example.com/video.mp4", "direct"},
+		{"https://www.youtube.com/watch?v=Aq5WXmQQooo", "youtube"},
+		{"https://youtu.be/UtdGSaJNb-g", "youtube"},
+		{"https://vimeo.com/85923309", "vimeo"},
+		{"https://www.tiktok.com/@lamininefennec/video/7578731780082044190", "tiktok"},
+		{"https://www.instagram.com/reel/DBOC0Z4hOR1/", "instagram"},
+		{"https://twitter.com/grok/status/2025666577988018674", "twitter"},
+		{"https://x.com/grok/status/2025666577988018674", "twitter"},
+		{"https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4", "direct"},
 		{"", "direct"},
 	}
 
