@@ -87,6 +87,23 @@ func withChiParam(r *http.Request, key, value string) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
 
+func TestBuildBrowserStreamURL(t *testing.T) {
+	got, err := buildBrowserStreamURL("http://minio:9000/clips/my/video.mp4?X-Amz-Signature=abc123")
+	if err != nil {
+		t.Fatalf("buildBrowserStreamURL returned error: %v", err)
+	}
+	want := "/storage/clips/my/video.mp4?X-Amz-Signature=abc123"
+	if got != want {
+		t.Fatalf("buildBrowserStreamURL = %q, want %q", got, want)
+	}
+}
+
+func TestBuildBrowserStreamURL_InvalidURL(t *testing.T) {
+	if _, err := buildBrowserStreamURL("://bad-url"); err == nil {
+		t.Fatal("expected error for invalid presigned URL, got nil")
+	}
+}
+
 // --- detectPlatform ---
 
 func TestDetectPlatform(t *testing.T) {
@@ -814,6 +831,60 @@ func TestHandleListJobs(t *testing.T) {
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleListJobs_IncludesSourceMetadataForFailedJobs(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "jobmeta", "password123")
+
+	sourceMeta := `{"id":"abc123","title":"Creator Deep Dive","uploader":"ClipFeed Labs","thumbnail":"https://img.example/abc.jpg"}`
+	_, err := app.db.Exec(`
+		INSERT INTO sources (id, url, platform, title, channel_name, thumbnail_url, metadata, status)
+		VALUES ('src-meta', 'https://youtube.com/watch?v=abc123', 'youtube', 'Creator Deep Dive', 'ClipFeed Labs', 'https://img.example/abc.jpg', ?, 'failed')
+	`, sourceMeta)
+	if err != nil {
+		t.Fatalf("insert source: %v", err)
+	}
+
+	_, err = app.db.Exec(`
+		INSERT INTO jobs (
+			id, source_id, job_type, status, error, attempts, max_attempts,
+			started_at, completed_at
+		) VALUES (
+			'job-meta', 'src-meta', 'download', 'failed',
+			'yt-dlp failed: forbidden', 1, 3,
+			strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3 minutes'),
+			strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 minutes')
+		)
+	`)
+	if err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+
+	req := authRequest(t, app, "GET", "/api/jobs", nil, token)
+	rec := httptest.NewRecorder()
+	app.handleListJobs(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	resp := decodeJSON(t, rec)
+	jobs, ok := resp["jobs"].([]interface{})
+	if !ok || len(jobs) == 0 {
+		t.Fatalf("jobs missing in response: %#v", resp["jobs"])
+	}
+
+	job := jobs[0].(map[string]interface{})
+	if job["channel_name"] != "ClipFeed Labs" {
+		t.Fatalf("channel_name = %v, want %q", job["channel_name"], "ClipFeed Labs")
+	}
+	if job["thumbnail_url"] != "https://img.example/abc.jpg" {
+		t.Fatalf("thumbnail_url = %v", job["thumbnail_url"])
+	}
+	if job["source_metadata"] == nil {
+		t.Fatal("source_metadata missing")
 	}
 }
 
