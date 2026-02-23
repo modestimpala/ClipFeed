@@ -9,23 +9,34 @@ import (
 func scanClips(rows *sql.Rows) []map[string]interface{} {
 	var clips []map[string]interface{}
 	for rows.Next() {
-		var id, title, description, thumbnailKey, topicsJSON, tagsJSON, createdAt, sourceID string
+		var id, title, createdAt, sourceID string
+		var description, thumbnailKey, topicsJSON, tagsJSON sql.NullString
 		var duration, score float64
 		var transcriptLength, fileSizeBytes, ageHours float64
 		var channelName, platform, sourceURL *string
 
-		rows.Scan(&id, &title, &description, &duration,
+		if err := rows.Scan(&id, &title, &description, &duration,
 			&thumbnailKey, &topicsJSON, &tagsJSON, &score,
 			&createdAt, &channelName, &platform, &sourceURL,
-			&sourceID, &transcriptLength, &fileSizeBytes, &ageHours)
+			&sourceID, &transcriptLength, &fileSizeBytes, &ageHours); err != nil {
+			continue
+		}
 
 		var topics, tags []string
-		json.Unmarshal([]byte(topicsJSON), &topics)
-		json.Unmarshal([]byte(tagsJSON), &tags)
+		topicsRaw := topicsJSON.String
+		if topicsRaw == "" {
+			topicsRaw = "[]"
+		}
+		tagsRaw := tagsJSON.String
+		if tagsRaw == "" {
+			tagsRaw = "[]"
+		}
+		json.Unmarshal([]byte(topicsRaw), &topics)
+		json.Unmarshal([]byte(tagsRaw), &tags)
 
 		clips = append(clips, map[string]interface{}{
-			"id": id, "title": title, "description": description,
-			"duration_seconds": duration, "thumbnail_key": thumbnailKey,
+			"id": id, "title": title, "description": description.String,
+			"duration_seconds": duration, "thumbnail_key": thumbnailKey.String,
 			"topics": topics, "tags": tags, "content_score": score,
 			"created_at": createdAt, "channel_name": channelName,
 			"platform": platform, "source_url": sourceURL,

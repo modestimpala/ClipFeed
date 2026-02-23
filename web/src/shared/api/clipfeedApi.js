@@ -42,6 +42,9 @@ export const api = {
   setCookie: (platform, cookieStr) =>
     request('PUT', `/me/cookies/${platform}`, { cookie_str: cookieStr }),
 
+  getCookieStatus: () =>
+    request('GET', '/me/cookies'),
+
   deleteCookie: (platform) =>
     request('DELETE', `/me/cookies/${platform}`),
 

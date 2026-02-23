@@ -156,3 +156,40 @@ func (a *App) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, map[string]string{"status": "removed", "platform": platform})
 }
+
+func (a *App) handleListCookieStatus(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+
+	statuses := map[string]map[string]interface{}{}
+	for platform := range validPlatforms {
+		statuses[platform] = map[string]interface{}{
+			"saved":      false,
+			"updated_at": nil,
+		}
+	}
+
+	rows, err := a.db.QueryContext(r.Context(),
+		`SELECT platform, updated_at FROM platform_cookies WHERE user_id = ? AND is_active = 1`,
+		userID,
+	)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to list cookie status"})
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var platform, updatedAt string
+		if rows.Scan(&platform, &updatedAt) != nil {
+			continue
+		}
+		if _, ok := statuses[platform]; ok {
+			statuses[platform] = map[string]interface{}{
+				"saved":      true,
+				"updated_at": updatedAt,
+			}
+		}
+	}
+
+	writeJSON(w, 200, map[string]interface{}{"platforms": statuses})
+}

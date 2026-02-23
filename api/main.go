@@ -177,6 +177,7 @@ func main() {
 		r.Put("/api/me/preferences", app.handleUpdatePreferences)
 		r.Get("/api/me/saved", app.handleListSaved)
 		r.Get("/api/me/history", app.handleListHistory)
+		r.Get("/api/me/cookies", app.handleListCookieStatus)
 		r.Put("/api/me/cookies/{platform}", app.handleSetCookie)
 		r.Delete("/api/me/cookies/{platform}", app.handleDeleteCookie)
 		r.Post("/api/collections", app.handleCreateCollection)
