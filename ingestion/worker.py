@@ -213,6 +213,7 @@ class Worker:
         cmd = [
             "yt-dlp",
             "--no-playlist",
+            "--js-runtimes", "node",
             "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
             "--merge-output-format", "mp4",
             "--output", output_template,

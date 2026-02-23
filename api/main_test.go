@@ -492,7 +492,7 @@ func TestHandleFeed_FiltersProcessingClips(t *testing.T) {
 func TestHandleGetClip_Found(t *testing.T) {
 	app := newTestApp(t)
 	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('src6', 'http://x.com', 'direct')`)
-	app.db.Exec(`INSERT INTO clips (id, source_id, title, duration_seconds, storage_key, status) VALUES ('c4', 'src6', 'My Clip', 42.0, 'key', 'ready')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, title, description, duration_seconds, storage_key, status) VALUES ('c4', 'src6', 'My Clip', '', 42.0, 'key', 'ready')`)
 
 	req := httptest.NewRequest("GET", "/api/clips/c4", nil)
 	req = withChiParam(req, "id", "c4")
@@ -636,8 +636,8 @@ func TestHandleSetCookie_InvalidPlatform(t *testing.T) {
 	token := registerUser(t, app, "badplat", "password123")
 
 	body := map[string]string{"cookie_str": "session_id=abc123"}
-	req := authRequest(t, app, "PUT", "/api/me/cookies/youtube", body, token)
-	req = withChiParam(req, "platform", "youtube")
+	req := authRequest(t, app, "PUT", "/api/me/cookies/reddit", body, token)
+	req = withChiParam(req, "platform", "reddit")
 	rec := httptest.NewRecorder()
 
 	app.handleSetCookie(rec, req)
