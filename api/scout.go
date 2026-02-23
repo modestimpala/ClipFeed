@@ -49,9 +49,18 @@ func (a *App) handleCreateScoutSource(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
-	rows, err := a.db.QueryContext(r.Context(),
-		`SELECT id, source_type, platform, identifier, is_active, last_checked, check_interval_hours, created_at
-		 FROM scout_sources WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT s.id, s.source_type, s.platform, s.identifier, s.is_active,
+		       s.last_checked, s.check_interval_hours, s.force_check, s.created_at,
+		       COALESCE(SUM(CASE WHEN c.status = 'pending'  THEN 1 ELSE 0 END), 0) AS cnt_pending,
+		       COALESCE(SUM(CASE WHEN c.status = 'approved' THEN 1 ELSE 0 END), 0) AS cnt_approved,
+		       COALESCE(SUM(CASE WHEN c.status = 'rejected' THEN 1 ELSE 0 END), 0) AS cnt_rejected,
+		       COALESCE(SUM(CASE WHEN c.status = 'ingested' THEN 1 ELSE 0 END), 0) AS cnt_ingested
+		FROM scout_sources s
+		LEFT JOIN scout_candidates c ON c.scout_source_id = s.id
+		WHERE s.user_id = ?
+		GROUP BY s.id
+		ORDER BY s.created_at DESC`, userID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "query failed"})
 		return
@@ -61,14 +70,21 @@ func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
 	var sources []map[string]interface{}
 	for rows.Next() {
 		var id, srcType, platform, identifier, createdAt string
-		var isActive, interval int
+		var isActive, interval, forceCheck int
 		var lastChecked *string
-		rows.Scan(&id, &srcType, &platform, &identifier, &isActive, &lastChecked, &interval, &createdAt)
+		var cntPending, cntApproved, cntRejected, cntIngested int
+		rows.Scan(&id, &srcType, &platform, &identifier, &isActive,
+			&lastChecked, &interval, &forceCheck, &createdAt,
+			&cntPending, &cntApproved, &cntRejected, &cntIngested)
 		sources = append(sources, map[string]interface{}{
 			"id": id, "source_type": srcType, "platform": platform,
 			"identifier": identifier, "is_active": isActive == 1,
 			"last_checked": lastChecked, "check_interval_hours": interval,
-			"created_at": createdAt,
+			"force_check": forceCheck == 1, "created_at": createdAt,
+			"candidates": map[string]int{
+				"pending": cntPending, "approved": cntApproved,
+				"rejected": cntRejected, "ingested": cntIngested,
+			},
 		})
 	}
 	writeJSON(w, 200, map[string]interface{}{"sources": sources})
@@ -146,10 +162,38 @@ func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	sourceID := chi.URLParam(r, "id")
 
-	res, err := a.db.ExecContext(r.Context(),
-		`DELETE FROM scout_sources WHERE id = ? AND user_id = ?`, sourceID, userID)
-	if err != nil {
+	// Verify ownership before touching anything.
+	var count int
+	if err := a.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM scout_sources WHERE id = ? AND user_id = ?`,
+		sourceID, userID).Scan(&count); err != nil || count == 0 {
+		writeJSON(w, 404, map[string]string{"error": "source not found"})
+		return
+	}
+
+	// Delete candidates first (FK references scout_sources with no cascade).
+	if _, err := a.db.ExecContext(r.Context(),
+		`DELETE FROM scout_candidates WHERE scout_source_id = ?`, sourceID); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to delete source"})
+		return
+	}
+	if _, err := a.db.ExecContext(r.Context(),
+		`DELETE FROM scout_sources WHERE id = ? AND user_id = ?`, sourceID, userID); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to delete source"})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+func (a *App) handleTriggerScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	sourceID := chi.URLParam(r, "id")
+
+	res, err := a.db.ExecContext(r.Context(),
+		`UPDATE scout_sources SET force_check = 1, last_checked = NULL
+		 WHERE id = ? AND user_id = ?`, sourceID, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "trigger failed"})
 		return
 	}
 	affected, _ := res.RowsAffected()
@@ -157,7 +201,7 @@ func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "source not found"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	writeJSON(w, 200, map[string]string{"status": "triggered"})
 }
 
 func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {

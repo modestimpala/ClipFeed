@@ -108,6 +108,34 @@
   white-space: nowrap;
 }
 
+.scout-source-stats {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.scout-stat {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+
+.scout-stat.pending {
+  background: rgba(255, 214, 10, 0.15);
+  color: #ffd60a;
+}
+
+.scout-stat.ingested {
+  background: rgba(52, 199, 89, 0.15);
+  color: var(--success);
+}
+
+.scout-stat.rejected {
+  background: rgba(255, 69, 58, 0.12);
+  color: #ff453a;
+}
+
 .scout-source-controls {
   display: flex;
   align-items: center;
@@ -143,6 +171,25 @@
   background: var(--success);
   color: #fff;
   border-color: var(--success);
+}
+
+.scout-check-btn {
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.scout-check-btn:disabled,
+.scout-check-btn.checking {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .scout-delete-btn {
@@ -354,6 +401,11 @@
 .scout-score-badge.red {
   background: rgba(255, 69, 58, 0.12);
   color: #ff453a;
+}
+
+.scout-score-badge.neutral {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
 }
 
 .scout-ingest-btn {

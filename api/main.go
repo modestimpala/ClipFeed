@@ -100,6 +100,7 @@ func main() {
 	// Column migrations for existing databases (ALTER TABLE is not idempotent in SQLite).
 	for _, m := range []string{
 		"ALTER TABLE user_preferences ADD COLUMN scout_threshold REAL DEFAULT 6.0",
+		"ALTER TABLE scout_sources ADD COLUMN force_check INTEGER DEFAULT 0",
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			log.Fatalf("migration failed (%s): %v", m, err)
@@ -192,6 +193,7 @@ func main() {
 		r.Get("/api/scout/sources", app.handleListScoutSources)
 		r.Patch("/api/scout/sources/{id}", app.handleUpdateScoutSource)
 		r.Delete("/api/scout/sources/{id}", app.handleDeleteScoutSource)
+		r.Post("/api/scout/sources/{id}/trigger", app.handleTriggerScoutSource)
 		r.Get("/api/scout/candidates", app.handleListScoutCandidates)
 		r.Post("/api/scout/candidates/{id}/approve", app.handleApproveCandidate)
 	})
