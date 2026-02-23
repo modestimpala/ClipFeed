@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -16,47 +18,41 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	meilisearch "github.com/meilisearch/meilisearch-go"
+	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/redis/go-redis/v9"
+	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
 )
 
+//go:embed schema.sql
+var schemaSQL string
+
 type App struct {
-	db    *pgxpool.Pool
-	rdb   *redis.Client
+	db    *sql.DB
 	minio *minio.Client
-	meili *meilisearch.Client
 	cfg   Config
 }
 
 type Config struct {
-	DatabaseURL   string
-	RedisURL      string
+	DBPath        string
 	MinioEndpoint string
 	MinioAccess   string
 	MinioSecret   string
 	MinioBucket   string
 	MinioSSL      bool
-	MeiliURL      string
-	MeiliKey      string
 	JWTSecret     string
 	Port          string
 }
 
 func loadConfig() Config {
 	return Config{
-		DatabaseURL:   getEnv("DATABASE_URL", "postgres://clipfeed:changeme@localhost:5432/clipfeed?sslmode=disable"),
-		RedisURL:      getEnv("REDIS_URL", "redis://localhost:6379"),
+		DBPath:        getEnv("DB_PATH", "/data/clipfeed.db"),
 		MinioEndpoint: getEnv("MINIO_ENDPOINT", "localhost:9000"),
 		MinioAccess:   getEnv("MINIO_ACCESS_KEY", "clipfeed"),
 		MinioSecret:   getEnv("MINIO_SECRET_KEY", "changeme123"),
 		MinioBucket:   getEnv("MINIO_BUCKET", "clips"),
 		MinioSSL:      getEnv("MINIO_USE_SSL", "false") == "true",
-		MeiliURL:      getEnv("MEILI_URL", "http://meilisearch:7700"),
-		MeiliKey:      getEnv("MEILI_KEY", ""),
 		JWTSecret:     getEnv("JWT_SECRET", "supersecretkey"),
 		Port:          getEnv("PORT", "8080"),
 	}
@@ -72,19 +68,32 @@ func getEnv(key, fallback string) string {
 func main() {
 	cfg := loadConfig()
 
-	// Postgres
-	pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	// SQLite
+	db, err := sql.Open("sqlite", cfg.DBPath)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		log.Fatalf("failed to open database: %v", err)
 	}
-	defer pool.Close()
+	defer db.Close()
 
-	// Redis
-	opts, err := redis.ParseURL(cfg.RedisURL)
-	if err != nil {
-		log.Fatalf("failed to parse redis url: %v", err)
+	// Single connection: prevents concurrent write conflicts
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA synchronous=NORMAL",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			log.Fatalf("pragma failed (%s): %v", pragma, err)
+		}
 	}
-	rdb := redis.NewClient(opts)
+
+	if _, err := db.Exec(schemaSQL); err != nil {
+		log.Fatalf("failed to init schema: %v", err)
+	}
 
 	// MinIO
 	minioClient, err := minio.New(cfg.MinioEndpoint, &minio.Options{
@@ -108,13 +117,7 @@ func main() {
 		log.Printf("created bucket: %s", cfg.MinioBucket)
 	}
 
-	// Meilisearch
-	meiliClient := meilisearch.NewClient(meilisearch.ClientConfig{
-		Host:   cfg.MeiliURL,
-		APIKey: cfg.MeiliKey,
-	})
-
-	app := &App{db: pool, rdb: rdb, minio: minioClient, meili: meiliClient, cfg: cfg}
+	app := &App{db: db, minio: minioClient, cfg: cfg}
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -129,58 +132,38 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	// Health
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	})
 
-	// Public routes
 	r.Post("/api/auth/register", app.handleRegister)
 	r.Post("/api/auth/login", app.handleLogin)
-
-	// Feed (works for anonymous and authenticated)
 	r.Get("/api/feed", app.optionalAuth(app.handleFeed))
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
-
-	// Search (public)
 	r.Get("/api/search", app.handleSearch)
 
-	// Authenticated routes
 	r.Group(func(r chi.Router) {
 		r.Use(app.authMiddleware)
-
-		// Clips
 		r.Post("/api/clips/{id}/interact", app.handleInteraction)
 		r.Post("/api/clips/{id}/save", app.handleSaveClip)
 		r.Delete("/api/clips/{id}/save", app.handleUnsaveClip)
-
-		// Ingestion
 		r.Post("/api/ingest", app.handleIngest)
 		r.Get("/api/jobs", app.handleListJobs)
 		r.Get("/api/jobs/{id}", app.handleGetJob)
-
-		// User
 		r.Get("/api/me", app.handleGetProfile)
 		r.Put("/api/me/preferences", app.handleUpdatePreferences)
 		r.Get("/api/me/saved", app.handleListSaved)
 		r.Get("/api/me/history", app.handleListHistory)
-
-		// Platform cookies
 		r.Put("/api/me/cookies/{platform}", app.handleSetCookie)
 		r.Delete("/api/me/cookies/{platform}", app.handleDeleteCookie)
-
-		// Collections
 		r.Post("/api/collections", app.handleCreateCollection)
 		r.Get("/api/collections", app.handleListCollections)
 		r.Post("/api/collections/{id}/clips", app.handleAddToCollection)
 		r.Delete("/api/collections/{id}/clips/{clipId}", app.handleRemoveFromCollection)
 	})
 
-	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: r,
-	}
+	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 
 	go func() {
 		log.Printf("ClipFeed API listening on :%s", cfg.Port)
@@ -213,7 +196,6 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
-
 	if len(req.Username) < 3 || len(req.Password) < 8 {
 		writeJSON(w, 400, map[string]string{"error": "username must be 3+ chars, password 8+ chars"})
 		return
@@ -225,16 +207,12 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userID string
-	err = a.db.QueryRow(r.Context(),
-		`INSERT INTO users (username, email, password_hash, display_name)
-		 VALUES ($1, $2, $3, $1)
-		 RETURNING id`,
-		req.Username, req.Email, string(hash),
-	).Scan(&userID)
-
+	userID := uuid.New().String()
+	_, err = a.db.ExecContext(r.Context(),
+		`INSERT INTO users (id, username, email, password_hash, display_name) VALUES (?, ?, ?, ?, ?)`,
+		userID, req.Username, req.Email, string(hash), req.Username)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate") {
+		if strings.Contains(err.Error(), "UNIQUE") {
 			writeJSON(w, 409, map[string]string{"error": "username or email already taken"})
 			return
 		}
@@ -242,9 +220,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create default preferences
-	a.db.Exec(r.Context(),
-		`INSERT INTO user_preferences (user_id) VALUES ($1)`, userID)
+	a.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)`, userID)
 
 	token, err := a.generateToken(userID)
 	if err != nil {
@@ -268,11 +244,10 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var userID, hash string
-	err := a.db.QueryRow(r.Context(),
-		`SELECT id, password_hash FROM users WHERE username = $1 OR email = $1`,
-		req.Username,
+	err := a.db.QueryRowContext(r.Context(),
+		`SELECT id, password_hash FROM users WHERE username = ? OR email = ?`,
+		req.Username, req.Username,
 	).Scan(&userID, &hash)
-
 	if err != nil {
 		writeJSON(w, 401, map[string]string{"error": "invalid credentials"})
 		return
@@ -282,13 +257,11 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, map[string]string{"error": "invalid credentials"})
 		return
 	}
-
 	token, err := a.generateToken(userID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to generate token"})
 		return
 	}
-
 	writeJSON(w, 200, map[string]string{"token": token, "user_id": userID})
 }
 
@@ -361,7 +334,7 @@ func (a *App) extractUserID(r *http.Request) string {
 	return sub
 }
 
-// --- Search ---
+// --- Search (FTS5) ---
 
 func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
@@ -369,20 +342,38 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "q required"})
 		return
 	}
-	index := a.meili.Index("clips")
-	results, err := index.Search(q, &meilisearch.SearchRequest{
-		Limit: 20,
-		Sort:  []string{"content_score:desc"},
-	})
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
+		       c.topics, c.content_score, s.platform, s.channel_name
+		FROM clips_fts
+		JOIN clips c ON clips_fts.clip_id = c.id
+		LEFT JOIN sources s ON c.source_id = s.id
+		WHERE clips_fts MATCH ? AND c.status = 'ready'
+		ORDER BY bm25(clips_fts), c.content_score DESC
+		LIMIT 20
+	`, q)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "search failed"})
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{
-		"hits":  results.Hits,
-		"query": q,
-		"total": results.EstimatedTotalHits,
-	})
+	defer rows.Close()
+
+	var hits []map[string]interface{}
+	for rows.Next() {
+		var id, title, thumbnailKey, topicsJSON string
+		var duration, score float64
+		var platform, channelName *string
+		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &score, &platform, &channelName)
+		var topics []string
+		json.Unmarshal([]byte(topicsJSON), &topics)
+		hits = append(hits, map[string]interface{}{
+			"id": id, "title": title, "duration_seconds": duration,
+			"thumbnail_key": thumbnailKey, "topics": topics,
+			"content_score": score, "platform": platform, "channel_name": channelName,
+		})
+	}
+	writeJSON(w, 200, map[string]interface{}{"hits": hits, "query": q, "total": len(hits)})
 }
 
 // --- Feed ---
@@ -391,18 +382,18 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(userIDKey).(string)
 	limit := 20
 
-	var clips []map[string]interface{}
+	var rows *sql.Rows
+	var err error
 
 	if userID != "" {
-		// Personalized feed based on user preferences and interaction history
-		rows, err := a.db.Query(r.Context(), `
-			WITH user_prefs AS (
-				SELECT exploration_rate, topic_weights, min_clip_seconds, max_clip_seconds
-				FROM user_preferences WHERE user_id = $1
+		rows, err = a.db.QueryContext(r.Context(), `
+			WITH prefs AS (
+				SELECT exploration_rate, min_clip_seconds, max_clip_seconds
+				FROM user_preferences WHERE user_id = ?
 			),
 			seen AS (
 				SELECT clip_id FROM interactions
-				WHERE user_id = $1 AND created_at > now() - interval '24 hours'
+				WHERE user_id = ? AND created_at > datetime('now', '-24 hours')
 			)
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
@@ -411,83 +402,76 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
 			  AND c.id NOT IN (SELECT clip_id FROM seen)
-			  AND c.duration_seconds >= COALESCE((SELECT min_clip_seconds FROM user_prefs), 5)
-			  AND c.duration_seconds <= COALESCE((SELECT max_clip_seconds FROM user_prefs), 120)
+			  AND c.duration_seconds >= COALESCE((SELECT min_clip_seconds FROM prefs), 5)
+			  AND c.duration_seconds <= COALESCE((SELECT max_clip_seconds FROM prefs), 120)
 			ORDER BY
-			    (c.content_score * (1 - COALESCE((SELECT exploration_rate FROM user_prefs), 0.3)))
-			    + (random() * COALESCE((SELECT exploration_rate FROM user_prefs), 0.3))
+			    (c.content_score * (1.0 - COALESCE((SELECT exploration_rate FROM prefs), 0.3)))
+			    + (CAST(ABS(RANDOM()) AS REAL) / 9223372036854775807.0
+			       * COALESCE((SELECT exploration_rate FROM prefs), 0.3))
 			    DESC
-			LIMIT $2
-		`, userID, limit)
-
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to fetch feed"})
-			return
-		}
-		defer rows.Close()
-		clips = scanClips(rows)
+			LIMIT ?
+		`, userID, userID, limit)
 	} else {
-		// Anonymous feed - ranked by content score with randomness
-		rows, err := a.db.Query(r.Context(), `
+		rows, err = a.db.QueryContext(r.Context(), `
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
 			       c.created_at, s.channel_name, s.platform
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
-			ORDER BY (c.content_score * 0.7) + (random() * 0.3) DESC
-			LIMIT $1
+			ORDER BY (c.content_score * 0.7)
+			    + (CAST(ABS(RANDOM()) AS REAL) / 9223372036854775807.0 * 0.3) DESC
+			LIMIT ?
 		`, limit)
-
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to fetch feed"})
-			return
-		}
-		defer rows.Close()
-		clips = scanClips(rows)
 	}
 
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to fetch feed"})
+		return
+	}
+	defer rows.Close()
+
+	clips := scanClips(rows)
 	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
 }
 
 func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 	clipID := chi.URLParam(r, "id")
 
-	var clip map[string]interface{}
-	var id, title, description, thumbnailKey, status string
+	var id, title, description, thumbnailKey, topicsJSON, tagsJSON, status, createdAt string
 	var duration float64
-	var topics, tags []string
 	var score float64
-	var createdAt time.Time
 
-	err := a.db.QueryRow(r.Context(), `
-		SELECT c.id, c.title, c.description, c.duration_seconds,
-		       c.thumbnail_key, c.topics, c.tags, c.content_score,
-		       c.status, c.created_at
-		FROM clips c WHERE c.id = $1
-	`, clipID).Scan(&id, &title, &description, &duration, &thumbnailKey,
-		&topics, &tags, &score, &status, &createdAt)
+	err := a.db.QueryRowContext(r.Context(), `
+		SELECT id, title, description, duration_seconds,
+		       thumbnail_key, topics, tags, content_score, status, created_at
+		FROM clips WHERE id = ?
+	`, clipID).Scan(&id, &title, &description, &duration,
+		&thumbnailKey, &topicsJSON, &tagsJSON, &score, &status, &createdAt)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "clip not found"})
 		return
 	}
 
-	clip = map[string]interface{}{
+	var topics, tags []string
+	json.Unmarshal([]byte(topicsJSON), &topics)
+	json.Unmarshal([]byte(tagsJSON), &tags)
+
+	writeJSON(w, 200, map[string]interface{}{
 		"id": id, "title": title, "description": description,
 		"duration_seconds": duration, "thumbnail_key": thumbnailKey,
 		"topics": topics, "tags": tags, "content_score": score,
 		"status": status, "created_at": createdAt,
-	}
-	writeJSON(w, 200, clip)
+	})
 }
 
 func (a *App) handleStreamClip(w http.ResponseWriter, r *http.Request) {
 	clipID := chi.URLParam(r, "id")
 
 	var storageKey string
-	err := a.db.QueryRow(r.Context(),
-		`SELECT storage_key FROM clips WHERE id = $1 AND status = 'ready'`,
+	err := a.db.QueryRowContext(r.Context(),
+		`SELECT storage_key FROM clips WHERE id = ? AND status = 'ready'`,
 		clipID).Scan(&storageKey)
 
 	if err != nil {
@@ -495,7 +479,6 @@ func (a *App) handleStreamClip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a presigned URL for direct streaming from MinIO
 	presignedURL, err := a.minio.PresignedGetObject(r.Context(),
 		a.cfg.MinioBucket, storageKey, 2*time.Hour, nil)
 
@@ -503,7 +486,6 @@ func (a *App) handleStreamClip(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "failed to generate stream URL"})
 		return
 	}
-
 	writeJSON(w, 200, map[string]string{"url": presignedURL.String()})
 }
 
@@ -534,10 +516,11 @@ func (a *App) handleInteraction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := a.db.Exec(r.Context(), `
-		INSERT INTO interactions (user_id, clip_id, action, watch_duration_seconds, watch_percentage)
-		VALUES ($1, $2, $3, $4, $5)
-	`, userID, clipID, req.Action, req.WatchDuration, req.WatchPercentage)
+	interactionID := uuid.New().String()
+	_, err := a.db.ExecContext(r.Context(), `
+		INSERT INTO interactions (id, user_id, clip_id, action, watch_duration_seconds, watch_percentage)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, interactionID, userID, clipID, req.Action, req.WatchDuration, req.WatchPercentage)
 
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to record interaction"})
@@ -567,41 +550,42 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Detect platform
 	platform := detectPlatform(req.URL)
+	sourceID := uuid.New().String()
+	jobID := uuid.New().String()
+	payload := fmt.Sprintf(`{"url":%q,"source_id":%q,"platform":%q}`, req.URL, sourceID, platform)
 
-	// Insert source
-	var sourceID string
-	err := a.db.QueryRow(r.Context(), `
-		INSERT INTO sources (url, platform, submitted_by, status)
-		VALUES ($1, $2, $3, 'pending')
-		RETURNING id
-	`, req.URL, platform, userID).Scan(&sourceID)
-
+	conn, err := a.db.Conn(r.Context())
 	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "db error"})
+		return
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(r.Context(), "BEGIN IMMEDIATE"); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "db error"})
+		return
+	}
+
+	_, err = conn.ExecContext(r.Context(),
+		`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
+		sourceID, req.URL, platform, userID)
+	if err != nil {
+		conn.ExecContext(r.Context(), "ROLLBACK")
 		writeJSON(w, 500, map[string]string{"error": "failed to create source"})
 		return
 	}
 
-	// Create job with platform in payload
-	var jobID string
-	payload := fmt.Sprintf(
-		`{"url": "%s", "source_id": "%s", "platform": "%s"}`,
-		req.URL, sourceID, platform,
-	)
-	err = a.db.QueryRow(r.Context(), `
-		INSERT INTO jobs (source_id, job_type, payload)
-		VALUES ($1, 'download', $2)
-		RETURNING id
-	`, sourceID, payload).Scan(&jobID)
-
+	_, err = conn.ExecContext(r.Context(),
+		`INSERT INTO jobs (id, source_id, job_type, payload) VALUES (?, ?, 'download', ?)`,
+		jobID, sourceID, payload)
 	if err != nil {
+		conn.ExecContext(r.Context(), "ROLLBACK")
 		writeJSON(w, 500, map[string]string{"error": "failed to queue job"})
 		return
 	}
 
-	// Push to Redis queue
-	a.rdb.RPush(r.Context(), "clipfeed:jobs", jobID)
+	conn.ExecContext(r.Context(), "COMMIT")
 
 	writeJSON(w, 202, map[string]interface{}{
 		"source_id": sourceID,
@@ -617,7 +601,7 @@ func detectPlatform(url string) string {
 	case strings.Contains(url, "vimeo.com"):
 		return "vimeo"
 	case strings.Contains(url, "tiktok.com"):
-		return "tiktok"
+		return "instagram"
 	case strings.Contains(url, "instagram.com"):
 		return "instagram"
 	case strings.Contains(url, "twitter.com") || strings.Contains(url, "x.com"):
@@ -630,7 +614,7 @@ func detectPlatform(url string) string {
 // --- Jobs ---
 
 func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.Query(r.Context(), `
+	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT id, source_id, job_type, status, created_at, completed_at
 		FROM jobs ORDER BY created_at DESC LIMIT 50
 	`)
@@ -642,10 +626,8 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 	var jobs []map[string]interface{}
 	for rows.Next() {
-		var id, jobType, status string
-		var sourceID *string
-		var createdAt time.Time
-		var completedAt *time.Time
+		var id, jobType, status, createdAt string
+		var sourceID, completedAt *string
 		rows.Scan(&id, &sourceID, &jobType, &status, &createdAt, &completedAt)
 		jobs = append(jobs, map[string]interface{}{
 			"id": id, "source_id": sourceID, "job_type": jobType,
@@ -657,16 +639,14 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
-	var id, jobType, status string
+	var id, jobType, status, payloadStr, resultStr, createdAt string
 	var sourceID *string
-	var payload, result json.RawMessage
 	var errMsg *string
-	var createdAt time.Time
 
-	err := a.db.QueryRow(r.Context(), `
+	err := a.db.QueryRowContext(r.Context(), `
 		SELECT id, source_id, job_type, status, payload, result, error, created_at
-		FROM jobs WHERE id = $1
-	`, jobID).Scan(&id, &sourceID, &jobType, &status, &payload, &result, &errMsg, &createdAt)
+		FROM jobs WHERE id = ?
+	`, jobID).Scan(&id, &sourceID, &jobType, &status, &payloadStr, &resultStr, &errMsg, &createdAt)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "job not found"})
@@ -675,8 +655,8 @@ func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, map[string]interface{}{
 		"id": id, "source_id": sourceID, "job_type": jobType,
-		"status": status, "payload": payload, "result": result,
-		"error": errMsg, "created_at": createdAt,
+		"status": status, "payload": json.RawMessage(payloadStr),
+		"result": json.RawMessage(resultStr), "error": errMsg, "created_at": createdAt,
 	})
 }
 
@@ -685,13 +665,12 @@ func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
-	var username, email, displayName string
+	var username, email, displayName, createdAt string
 	var avatarURL *string
-	var createdAt time.Time
 
-	err := a.db.QueryRow(r.Context(), `
+	err := a.db.QueryRowContext(r.Context(), `
 		SELECT username, email, display_name, avatar_url, created_at
-		FROM users WHERE id = $1
+		FROM users WHERE id = ?
 	`, userID).Scan(&username, &email, &displayName, &avatarURL, &createdAt)
 
 	if err != nil {
@@ -717,16 +696,16 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 
 	topicWeights, _ := json.Marshal(prefs["topic_weights"])
 
-	_, err := a.db.Exec(r.Context(), `
+	_, err := a.db.ExecContext(r.Context(), `
 		INSERT INTO user_preferences (user_id, exploration_rate, topic_weights, min_clip_seconds, max_clip_seconds, autoplay)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_id) DO UPDATE SET
-			exploration_rate = COALESCE($2, user_preferences.exploration_rate),
-			topic_weights = COALESCE($3, user_preferences.topic_weights),
-			min_clip_seconds = COALESCE($4, user_preferences.min_clip_seconds),
-			max_clip_seconds = COALESCE($5, user_preferences.max_clip_seconds),
-			autoplay = COALESCE($6, user_preferences.autoplay),
-			updated_at = now()
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+			exploration_rate = COALESCE(excluded.exploration_rate, user_preferences.exploration_rate),
+			topic_weights    = COALESCE(excluded.topic_weights,    user_preferences.topic_weights),
+			min_clip_seconds = COALESCE(excluded.min_clip_seconds, user_preferences.min_clip_seconds),
+			max_clip_seconds = COALESCE(excluded.max_clip_seconds, user_preferences.max_clip_seconds),
+			autoplay         = COALESCE(excluded.autoplay,         user_preferences.autoplay),
+			updated_at       = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	`, userID,
 		prefs["exploration_rate"],
 		string(topicWeights),
@@ -749,8 +728,8 @@ func (a *App) handleSaveClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	clipID := chi.URLParam(r, "id")
 
-	_, err := a.db.Exec(r.Context(),
-		`INSERT INTO saved_clips (user_id, clip_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+	_, err := a.db.ExecContext(r.Context(),
+		`INSERT OR IGNORE INTO saved_clips (user_id, clip_id) VALUES (?, ?)`,
 		userID, clipID)
 
 	if err != nil {
@@ -764,8 +743,8 @@ func (a *App) handleUnsaveClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	clipID := chi.URLParam(r, "id")
 
-	a.db.Exec(r.Context(),
-		`DELETE FROM saved_clips WHERE user_id = $1 AND clip_id = $2`,
+	a.db.ExecContext(r.Context(),
+		`DELETE FROM saved_clips WHERE user_id = ? AND clip_id = ?`,
 		userID, clipID)
 
 	writeJSON(w, 200, map[string]string{"status": "removed"})
@@ -774,11 +753,11 @@ func (a *App) handleUnsaveClip(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
-	rows, err := a.db.Query(r.Context(), `
+	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key, c.topics, c.created_at
 		FROM saved_clips sc
 		JOIN clips c ON sc.clip_id = c.id
-		WHERE sc.user_id = $1
+		WHERE sc.user_id = ?
 		ORDER BY sc.created_at DESC
 	`, userID)
 
@@ -790,11 +769,11 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 
 	var clips []map[string]interface{}
 	for rows.Next() {
-		var id, title, thumbnailKey string
+		var id, title, thumbnailKey, topicsJSON, createdAt string
 		var duration float64
+		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &createdAt)
 		var topics []string
-		var createdAt time.Time
-		rows.Scan(&id, &title, &duration, &thumbnailKey, &topics, &createdAt)
+		json.Unmarshal([]byte(topicsJSON), &topics)
 		clips = append(clips, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
 			"thumbnail_key": thumbnailKey, "topics": topics, "created_at": createdAt,
@@ -806,13 +785,16 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
-	rows, err := a.db.Query(r.Context(), `
-		SELECT DISTINCT ON (i.clip_id) c.id, c.title, c.duration_seconds,
-		       c.thumbnail_key, i.action, i.created_at
-		FROM interactions i
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key, i.action, i.created_at
+		FROM (
+			SELECT clip_id, action, created_at,
+			       ROW_NUMBER() OVER (PARTITION BY clip_id ORDER BY created_at DESC) AS rn
+			FROM interactions WHERE user_id = ?
+		) i
 		JOIN clips c ON i.clip_id = c.id
-		WHERE i.user_id = $1
-		ORDER BY i.clip_id, i.created_at DESC
+		WHERE i.rn = 1
+		ORDER BY i.created_at DESC
 		LIMIT 100
 	`, userID)
 
@@ -826,7 +808,7 @@ func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, title, thumbnailKey, action string
 		var duration float64
-		var at time.Time
+		var at string
 		rows.Scan(&id, &title, &duration, &thumbnailKey, &action, &at)
 		history = append(history, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
@@ -861,12 +843,15 @@ func (a *App) handleSetCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := a.db.Exec(r.Context(), `
-		INSERT INTO platform_cookies (user_id, platform, cookie_str, is_active, updated_at)
-		VALUES ($1, $2, $3, true, now())
-		ON CONFLICT (user_id, platform) DO UPDATE SET
-			cookie_str = $3, is_active = true, updated_at = now()
-	`, userID, platform, req.CookieStr)
+	cookieID := uuid.New().String()
+	_, err := a.db.ExecContext(r.Context(), `
+		INSERT INTO platform_cookies (id, user_id, platform, cookie_str, is_active, updated_at)
+		VALUES (?, ?, ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		ON CONFLICT(user_id, platform) DO UPDATE SET
+			cookie_str = excluded.cookie_str,
+			is_active  = 1,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	`, cookieID, userID, platform, req.CookieStr)
 
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to save cookie"})
@@ -885,9 +870,9 @@ func (a *App) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.db.Exec(r.Context(),
-		`UPDATE platform_cookies SET is_active = false, updated_at = now()
-		 WHERE user_id = $1 AND platform = $2`,
+	a.db.ExecContext(r.Context(),
+		`UPDATE platform_cookies SET is_active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		 WHERE user_id = ? AND platform = ?`,
 		userID, platform)
 
 	writeJSON(w, 200, map[string]string{"status": "removed", "platform": platform})
@@ -903,10 +888,10 @@ func (a *App) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	var id string
-	err := a.db.QueryRow(r.Context(), `
-		INSERT INTO collections (user_id, title, description) VALUES ($1, $2, $3) RETURNING id
-	`, userID, req.Title, req.Description).Scan(&id)
+	id := uuid.New().String()
+	_, err := a.db.ExecContext(r.Context(),
+		`INSERT INTO collections (id, user_id, title, description) VALUES (?, ?, ?, ?)`,
+		id, userID, req.Title, req.Description)
 
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to create collection"})
@@ -917,12 +902,12 @@ func (a *App) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleListCollections(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
-	rows, err := a.db.Query(r.Context(), `
+	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT c.id, c.title, c.description, c.is_public, c.created_at,
 		       COUNT(cc.clip_id) as clip_count
 		FROM collections c
 		LEFT JOIN collection_clips cc ON c.id = cc.collection_id
-		WHERE c.user_id = $1
+		WHERE c.user_id = ?
 		GROUP BY c.id
 		ORDER BY c.created_at DESC
 	`, userID)
@@ -935,15 +920,14 @@ func (a *App) handleListCollections(w http.ResponseWriter, r *http.Request) {
 
 	var collections []map[string]interface{}
 	for rows.Next() {
-		var id, title string
+		var id, title, createdAt string
 		var description *string
-		var isPublic bool
-		var createdAt time.Time
+		var isPublic int
 		var clipCount int
 		rows.Scan(&id, &title, &description, &isPublic, &createdAt, &clipCount)
 		collections = append(collections, map[string]interface{}{
 			"id": id, "title": title, "description": description,
-			"is_public": isPublic, "clip_count": clipCount, "created_at": createdAt,
+			"is_public": isPublic == 1, "clip_count": clipCount, "created_at": createdAt,
 		})
 	}
 	writeJSON(w, 200, map[string]interface{}{"collections": collections})
@@ -956,9 +940,9 @@ func (a *App) handleAddToCollection(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	_, err := a.db.Exec(r.Context(), `
+	_, err := a.db.ExecContext(r.Context(), `
 		INSERT INTO collection_clips (collection_id, clip_id, position)
-		VALUES ($1, $2, COALESCE((SELECT MAX(position) + 1 FROM collection_clips WHERE collection_id = $1), 0))
+		VALUES (?, ?, COALESCE((SELECT MAX(position) + 1 FROM collection_clips WHERE collection_id = ?), 0))
 		ON CONFLICT DO NOTHING
 	`, collectionID, req.ClipID)
 
@@ -973,8 +957,8 @@ func (a *App) handleRemoveFromCollection(w http.ResponseWriter, r *http.Request)
 	collectionID := chi.URLParam(r, "id")
 	clipID := chi.URLParam(r, "clipId")
 
-	a.db.Exec(r.Context(),
-		`DELETE FROM collection_clips WHERE collection_id = $1 AND clip_id = $2`,
+	a.db.ExecContext(r.Context(),
+		`DELETE FROM collection_clips WHERE collection_id = ? AND clip_id = ?`,
 		collectionID, clipID)
 
 	writeJSON(w, 200, map[string]string{"status": "removed"})
@@ -982,21 +966,20 @@ func (a *App) handleRemoveFromCollection(w http.ResponseWriter, r *http.Request)
 
 // --- Helpers ---
 
-func scanClips(rows interface {
-	Next() bool
-	Scan(...interface{}) error
-}) []map[string]interface{} {
+func scanClips(rows *sql.Rows) []map[string]interface{} {
 	var clips []map[string]interface{}
 	for rows.Next() {
-		var id, title, description, thumbnailKey string
+		var id, title, description, thumbnailKey, topicsJSON, tagsJSON, createdAt string
 		var duration, score float64
-		var topics, tags []string
-		var createdAt time.Time
 		var channelName, platform *string
 
 		rows.Scan(&id, &title, &description, &duration,
-			&thumbnailKey, &topics, &tags, &score,
+			&thumbnailKey, &topicsJSON, &tagsJSON, &score,
 			&createdAt, &channelName, &platform)
+
+		var topics, tags []string
+		json.Unmarshal([]byte(topicsJSON), &topics)
+		json.Unmarshal([]byte(tagsJSON), &tags)
 
 		clips = append(clips, map[string]interface{}{
 			"id": id, "title": title, "description": description,
