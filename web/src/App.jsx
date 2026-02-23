@@ -101,7 +101,7 @@ function AuthScreen({ onAuth, onSkip }) {
 }
 
 // --- Clip Card ---
-function ClipCard({ clip, isActive, onInteract }) {
+const ClipCard = React.forwardRef(function ClipCard({ clip, isActive, onInteract }, ref) {
   const videoRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -179,7 +179,7 @@ function ClipCard({ clip, isActive, onInteract }) {
   if (!clip) return <div className="clip-card" />;
 
   return (
-    <div className="clip-card" onClick={togglePlay}>
+    <div className="clip-card" ref={ref} data-clip-id={clip.id} onClick={togglePlay}>
       <video ref={videoRef} playsInline preload="none" loop />
       <div className="clip-overlay">
         <div className="clip-info">
@@ -199,33 +199,48 @@ function ClipCard({ clip, isActive, onInteract }) {
       <div className="clip-progress"><div className="clip-progress-bar" style={{ width: `${progress}%` }} /></div>
     </div>
   );
-}
+});
 
 // --- Feed ---
 function FeedScreen() {
   const [clips, setClips] = useState([]);
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeId, setActiveId] = useState(null);
   const viewportRef = useRef(null);
+  const cardRefs = useRef(new Map());
 
   useEffect(() => {
-    api.getFeed().then((data) => setClips(data.clips || [])).catch(console.error);
+    api.getFeed().then((data) => {
+      const loaded = data.clips || [];
+      setClips(loaded);
+      if (loaded.length > 0) setActiveId(loaded[0].id);
+    }).catch(console.error);
   }, []);
 
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
-    let ticking = false;
-    function onScroll() {
-      if (!ticking) {
-        requestAnimationFrame(() => {
-          setActiveIndex(Math.round(viewport.scrollTop / viewport.clientHeight));
-          ticking = false;
-        });
-        ticking = true;
-      }
+    if (!viewport || clips.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setActiveId(entry.target.dataset.clipId);
+          }
+        }
+      },
+      { root: viewport, threshold: 0.6 }
+    );
+
+    for (const el of cardRefs.current.values()) {
+      if (el) observer.observe(el);
     }
-    viewport.addEventListener('scroll', onScroll, { passive: true });
-    return () => viewport.removeEventListener('scroll', onScroll);
+
+    return () => observer.disconnect();
+  }, [clips]);
+
+  const setCardRef = useCallback((clipId, el) => {
+    if (el) cardRefs.current.set(clipId, el);
+    else cardRefs.current.delete(clipId);
   }, []);
 
   function handleInteract(clipId, action, duration, percentage) {
@@ -244,8 +259,14 @@ function FeedScreen() {
   return (
     <div className="feed-container">
       <div className="feed-viewport" ref={viewportRef}>
-        {clips.map((clip, i) => (
-          <ClipCard key={clip.id} clip={clip} isActive={i === activeIndex} onInteract={handleInteract} />
+        {clips.map((clip) => (
+          <ClipCard
+            key={clip.id}
+            clip={clip}
+            isActive={clip.id === activeId}
+            onInteract={handleInteract}
+            ref={(el) => setCardRef(clip.id, el)}
+          />
         ))}
       </div>
     </div>

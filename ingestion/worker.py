@@ -41,7 +41,8 @@ WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/clipfeed"))
 MIN_CLIP_SECONDS = 15
 MAX_CLIP_SECONDS = 90
 TARGET_CLIP_SECONDS = 45
-SCENE_THRESHOLD = 0.3
+SILENCE_NOISE_DB = -30
+SILENCE_MIN_DURATION = 0.5
 
 shutdown = False
 
@@ -271,46 +272,50 @@ class Worker:
 
     def detect_scenes(self, video_path: Path, total_duration: float) -> list:
         """
-        Detect scene changes to find natural split points.
-        Falls back to fixed-interval splitting if scene detection fails.
+        Find natural split points using audio silence detection.
+        Falls back to fixed-interval splitting if no silence gaps found.
         """
         if total_duration <= MAX_CLIP_SECONDS:
             return [{"start": 0, "end": total_duration}]
 
         try:
-            # Use ffmpeg scene detection
             cmd = [
                 "ffmpeg", "-i", str(video_path),
-                "-filter:v", f"select='gt(scene,{SCENE_THRESHOLD})',showinfo",
+                "-af", f"silencedetect=noise={SILENCE_NOISE_DB}dB:d={SILENCE_MIN_DURATION}",
                 "-f", "null", "-",
             ]
 
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=300
+                cmd, capture_output=True, text=True, timeout=120
             )
 
-            # Parse scene change timestamps
-            scene_times = [0.0]
+            silence_midpoints = []
+            silence_start = None
             for line in result.stderr.split("\n"):
-                if "pts_time:" in line:
+                if "silence_start:" in line:
                     try:
-                        pts = float(line.split("pts_time:")[1].split()[0])
-                        scene_times.append(pts)
+                        silence_start = float(line.split("silence_start:")[1].strip().split()[0])
                     except (ValueError, IndexError):
-                        continue
+                        silence_start = None
+                elif "silence_end:" in line and silence_start is not None:
+                    try:
+                        silence_end = float(line.split("silence_end:")[1].strip().split()[0])
+                        midpoint = (silence_start + silence_end) / 2
+                        silence_midpoints.append(midpoint)
+                    except (ValueError, IndexError):
+                        pass
+                    silence_start = None
 
-            scene_times.append(total_duration)
-            scene_times = sorted(set(scene_times))
-
-            # Merge scene boundaries into clips of appropriate length
-            segments = self._merge_scenes(scene_times, total_duration)
-            if segments:
-                return segments
+            if silence_midpoints:
+                split_points = [0.0] + silence_midpoints + [total_duration]
+                split_points = sorted(set(split_points))
+                segments = self._merge_scenes(split_points, total_duration)
+                if segments:
+                    return segments
 
         except Exception as e:
-            log.warning(f"Scene detection failed, using fixed intervals: {e}")
+            log.warning(f"Silence detection failed, using fixed intervals: {e}")
 
-        # Fallback: fixed interval splitting
         return self._fixed_split(total_duration)
 
     def _merge_scenes(self, scene_times: list, total_duration: float) -> list:
