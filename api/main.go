@@ -348,7 +348,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
-		       c.topics, c.content_score, s.platform, s.channel_name
+		       c.topics, c.content_score, s.platform, s.channel_name, s.url
 		FROM clips_fts
 		JOIN clips c ON clips_fts.clip_id = c.id
 		LEFT JOIN sources s ON c.source_id = s.id
@@ -366,14 +366,15 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, title, thumbnailKey, topicsJSON string
 		var duration, score float64
-		var platform, channelName *string
-		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &score, &platform, &channelName)
+		var platform, channelName, sourceURL *string
+		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &score, &platform, &channelName, &sourceURL)
 		var topics []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		hits = append(hits, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
 			"thumbnail_key": thumbnailKey, "topics": topics,
 			"content_score": score, "platform": platform, "channel_name": channelName,
+			"source_url": sourceURL,
 		})
 	}
 	writeJSON(w, 200, map[string]interface{}{"hits": hits, "query": q, "total": len(hits)})
@@ -409,7 +410,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			)
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
-			       c.created_at, s.channel_name, s.platform
+			       c.created_at, s.channel_name, s.platform, s.url
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
@@ -427,7 +428,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 		rows, err = a.db.QueryContext(r.Context(), `
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
-			       c.created_at, s.channel_name, s.platform
+			       c.created_at, s.channel_name, s.platform, s.url
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
@@ -486,15 +487,22 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 	clipID := chi.URLParam(r, "id")
 
 	var id, title, description, thumbnailKey, topicsJSON, tagsJSON, status, createdAt string
-	var duration float64
-	var score float64
+	var duration, score float64
+	var width, height, fileSize *int64
+	var channelName, platform, sourceURL *string
 
 	err := a.db.QueryRowContext(r.Context(), `
-		SELECT id, title, description, duration_seconds,
-		       thumbnail_key, topics, tags, content_score, status, created_at
-		FROM clips WHERE id = ?
+		SELECT c.id, c.title, c.description, c.duration_seconds,
+		       c.thumbnail_key, c.topics, c.tags, c.content_score,
+		       c.status, c.created_at, c.width, c.height, c.file_size_bytes,
+		       s.channel_name, s.platform, s.url
+		FROM clips c
+		LEFT JOIN sources s ON c.source_id = s.id
+		WHERE c.id = ?
 	`, clipID).Scan(&id, &title, &description, &duration,
-		&thumbnailKey, &topicsJSON, &tagsJSON, &score, &status, &createdAt)
+		&thumbnailKey, &topicsJSON, &tagsJSON, &score,
+		&status, &createdAt, &width, &height, &fileSize,
+		&channelName, &platform, &sourceURL)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "clip not found"})
@@ -510,6 +518,9 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 		"duration_seconds": duration, "thumbnail_key": thumbnailKey,
 		"topics": topics, "tags": tags, "content_score": score,
 		"status": status, "created_at": createdAt,
+		"width": width, "height": height, "file_size_bytes": fileSize,
+		"channel_name": channelName, "platform": platform,
+		"source_url": sourceURL,
 	})
 }
 
@@ -906,9 +917,11 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 
 	rows, err := a.db.QueryContext(r.Context(), `
-		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key, c.topics, c.created_at
+		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
+		       c.topics, c.created_at, s.platform, s.channel_name, s.url
 		FROM saved_clips sc
 		JOIN clips c ON sc.clip_id = c.id
+		LEFT JOIN sources s ON c.source_id = s.id
 		WHERE sc.user_id = ?
 		ORDER BY sc.created_at DESC
 	`, userID)
@@ -923,12 +936,15 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, title, thumbnailKey, topicsJSON, createdAt string
 		var duration float64
-		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &createdAt)
+		var platform, channelName, sourceURL *string
+		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &createdAt,
+			&platform, &channelName, &sourceURL)
 		var topics []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		clips = append(clips, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
 			"thumbnail_key": thumbnailKey, "topics": topics, "created_at": createdAt,
+			"platform": platform, "channel_name": channelName, "source_url": sourceURL,
 		})
 	}
 	writeJSON(w, 200, map[string]interface{}{"clips": clips})
@@ -1123,11 +1139,11 @@ func scanClips(rows *sql.Rows) []map[string]interface{} {
 	for rows.Next() {
 		var id, title, description, thumbnailKey, topicsJSON, tagsJSON, createdAt string
 		var duration, score float64
-		var channelName, platform *string
+		var channelName, platform, sourceURL *string
 
 		rows.Scan(&id, &title, &description, &duration,
 			&thumbnailKey, &topicsJSON, &tagsJSON, &score,
-			&createdAt, &channelName, &platform)
+			&createdAt, &channelName, &platform, &sourceURL)
 
 		var topics, tags []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
@@ -1138,7 +1154,7 @@ func scanClips(rows *sql.Rows) []map[string]interface{} {
 			"duration_seconds": duration, "thumbnail_key": thumbnailKey,
 			"topics": topics, "tags": tags, "content_score": score,
 			"created_at": createdAt, "channel_name": channelName,
-			"platform": platform,
+			"platform": platform, "source_url": sourceURL,
 		})
 	}
 	return clips

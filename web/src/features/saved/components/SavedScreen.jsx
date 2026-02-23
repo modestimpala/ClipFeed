@@ -58,6 +58,10 @@ export function SavedScreen() {
             </div>
             <div className="saved-info">
               <div className="saved-title">{clip.title}</div>
+              <div className="saved-meta-line">
+                {clip.platform && <span className="saved-platform">{clip.platform}</span>}
+                {clip.channel_name && <span className="saved-channel">{clip.channel_name}</span>}
+              </div>
               {clip.topics && clip.topics.length > 0 && (
                 <div className="saved-topics">
                   {clip.topics.slice(0, 3).map((t) => (
@@ -66,9 +70,20 @@ export function SavedScreen() {
                 </div>
               )}
             </div>
-            <button className="saved-remove" onClick={() => handleRemove(clip.id)} title="Remove">
-              <Icons.X />
-            </button>
+            <div className="saved-actions">
+              {clip.source_url && (
+                <button
+                  className="saved-source-btn"
+                  onClick={() => window.open(clip.source_url, '_blank', 'noopener')}
+                  title="Open source"
+                >
+                  <Icons.ExternalLink />
+                </button>
+              )}
+              <button className="saved-remove" onClick={() => handleRemove(clip.id)} title="Remove">
+                <Icons.X />
+              </button>
+            </div>
           </div>
         ))}
       </div>
