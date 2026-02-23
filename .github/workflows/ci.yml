@@ -20,8 +20,11 @@ jobs:
         with:
           go-version-file: api/go.mod
 
+      - name: Download dependencies
+        run: go mod tidy
+
       - name: Run tests
-        run: go test ./...
+        run: go test -v ./...
 
   web-build:
     name: Web build (Vite)
