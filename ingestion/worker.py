@@ -471,7 +471,7 @@ class Worker:
     ):
         """Transcode a segment, optimized for mobile viewing."""
         # Keep aspect ratio, target 720p max
-        scale_filter = "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease"
+        scale_filter = "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
 
         cmd = [
             "ffmpeg", "-y",
@@ -491,7 +491,7 @@ class Worker:
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            raise RuntimeError(f"Transcode failed: {result.stderr[:300]}")
+            raise RuntimeError(f"Transcode failed: {result.stderr[-500:]}")
 
     def _generate_thumbnail(self, clip_path: Path, thumb_path: Path):
         """Generate a thumbnail from the middle of the clip."""
