@@ -1,26 +1,4 @@
-version: "3.9"
-
 services:
-  # --- Database ---
-  postgres:
-    image: postgres:16-alpine
-    container_name: clipfeed-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: clipfeed
-      POSTGRES_USER: clipfeed
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clipfeed"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   # --- Object Storage (S3-compatible) ---
   minio:
     image: minio/minio:latest
@@ -41,34 +19,6 @@ services:
       timeout: 5s
       retries: 3
 
-  # --- Task Queue ---
-  redis:
-    image: redis:7-alpine
-    container_name: clipfeed-redis
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # --- Search Engine ---
-  meilisearch:
-    image: getmeili/meilisearch:v1.6
-    container_name: clipfeed-search
-    restart: unless-stopped
-    environment:
-      MEILI_MASTER_KEY: ${MEILI_KEY:-changeme}
-      MEILI_ENV: development
-    volumes:
-      - meili_data:/meili_data
-    ports:
-      - "7700:7700"
-
   # --- API Server ---
   api:
     build:
@@ -77,25 +27,18 @@ services:
     container_name: clipfeed-api
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       minio:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://clipfeed:${DB_PASSWORD:-changeme}@postgres:5432/clipfeed?sslmode=disable
-      REDIS_URL: redis://redis:6379
+      DB_PATH: /data/clipfeed.db
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_USER:-clipfeed}
       MINIO_SECRET_KEY: ${MINIO_PASSWORD:-changeme123}
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
-      MEILI_URL: http://meilisearch:7700
-      MEILI_KEY: ${MEILI_KEY:-changeme}
       JWT_SECRET: ${JWT_SECRET:-supersecretkey}
-      STORAGE_LIMIT_GB: ${STORAGE_LIMIT_GB:-50}
-      CLIP_TTL_DAYS: ${CLIP_TTL_DAYS:-30}
+    volumes:
+      - db_data:/data
     ports:
       - "8080:8080"
 
@@ -107,15 +50,10 @@ services:
     container_name: clipfeed-worker
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
       minio:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://clipfeed:${DB_PASSWORD:-changeme}@postgres:5432/clipfeed?sslmode=disable
-      REDIS_URL: redis://redis:6379
+      DB_PATH: /data/clipfeed.db
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_USER:-clipfeed}
       MINIO_SECRET_KEY: ${MINIO_PASSWORD:-changeme123}
@@ -123,9 +61,9 @@ services:
       MINIO_USE_SSL: "false"
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       MAX_CONCURRENT_JOBS: ${MAX_WORKERS:-2}
-      MEILI_URL: http://meilisearch:7700
-      MEILI_KEY: ${MEILI_KEY:-changeme}
+      CLIP_TTL_DAYS: ${CLIP_TTL_DAYS:-30}
     volumes:
+      - db_data:/data
       - worker_tmp:/tmp/clipfeed
 
   # --- Score Updater ---
@@ -135,12 +73,11 @@ services:
       dockerfile: Dockerfile
     container_name: clipfeed-scorer
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgres://clipfeed:${DB_PASSWORD:-changeme}@postgres:5432/clipfeed?sslmode=disable
+      DB_PATH: /data/clipfeed.db
       SCORE_UPDATE_INTERVAL: "${SCORE_UPDATE_INTERVAL:-900}"
+    volumes:
+      - db_data:/data
     command: ["python", "score_updater.py"]
 
   # --- Web Frontend ---
@@ -170,8 +107,6 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
 
 volumes:
-  pgdata:
   minio_data:
-  redis_data:
-  meili_data:
+  db_data:
   worker_tmp:
