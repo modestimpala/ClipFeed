@@ -1,4 +1,4 @@
-.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score migrate clean
+.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score clean
 
 up:
 	docker compose up -d
@@ -25,18 +25,13 @@ shell-worker:
 	docker compose exec worker bash
 
 shell-db:
-	docker compose exec postgres psql -U clipfeed clipfeed
+	docker compose exec api sqlite3 /data/clipfeed.db
 
 lifecycle:
 	docker compose exec worker python lifecycle.py
 
 score:
 	docker compose exec score-updater python score_updater.py
-
-migrate:
-	docker compose exec postgres psql -U clipfeed clipfeed \
-	  -f /docker-entrypoint-initdb.d/002_score_function.sql \
-	  -f /docker-entrypoint-initdb.d/003_platform_cookies.sql
 
 dev-api:
 	cd api && go run .
