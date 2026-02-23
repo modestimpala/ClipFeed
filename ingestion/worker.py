@@ -147,7 +147,7 @@ class Worker:
             try:
                 # Fetch platform cookie if applicable
                 cookie_str = None
-                if platform in ("tiktok", "instagram", "twitter"):
+                if platform in ("youtube", "tiktok", "instagram", "twitter"):
                     row = db.execute("""
                         SELECT cookie_str FROM platform_cookies
                         WHERE user_id = (SELECT submitted_by FROM sources WHERE id = ?)

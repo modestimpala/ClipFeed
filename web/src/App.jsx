@@ -443,10 +443,10 @@ function displayUrl(url) {
 
 function summarizeError(error) {
   if (!error) return null;
-  if (error.includes('403: Forbidden')) return 'Access denied (403) — video may be private or region-locked';
+  if (error.includes('403: Forbidden')) return 'Access denied (403) — try adding cookies in Tuning → Platform Cookies';
   if (error.includes('404')) return 'Video not found (404) — link may be broken or removed';
   if (error.includes('429')) return 'Rate limited — too many requests, will retry';
-  if (error.includes('nsig extraction failed')) return 'Download blocked — platform changed its protection';
+  if (error.includes('nsig extraction failed')) return 'Download blocked — try adding cookies in Tuning → Platform Cookies';
   if (error.includes('Unsupported URL')) return 'URL not supported — try a different link';
   if (error.includes('Video unavailable')) return 'Video unavailable — may be deleted or private';
   const firstLine = error.split('\n').pop().trim();
@@ -517,13 +517,19 @@ function JobsScreen() {
 }
 
 // --- Cookie Section (inside Settings) ---
+const COOKIE_PLATFORMS = [
+  { platform: 'youtube', label: 'YouTube' },
+  { platform: 'tiktok', label: 'TikTok' },
+  { platform: 'instagram', label: 'Instagram' },
+];
+
 function CookieSection() {
-  const [tiktokCookie, setTiktokCookie] = useState('');
-  const [instagramCookie, setInstagramCookie] = useState('');
+  const [cookies, setCookies] = useState({});
   const [status, setStatus] = useState({});
 
-  async function handleSave(platform, cookieStr) {
-    if (!cookieStr.trim()) return;
+  async function handleSave(platform) {
+    const cookieStr = cookies[platform];
+    if (!cookieStr?.trim()) return;
     try {
       await api.setCookie(platform, cookieStr);
       setStatus((s) => ({ ...s, [platform]: 'saved' }));
@@ -536,8 +542,7 @@ function CookieSection() {
   async function handleDelete(platform) {
     try {
       await api.deleteCookie(platform);
-      if (platform === 'tiktok') setTiktokCookie('');
-      if (platform === 'instagram') setInstagramCookie('');
+      setCookies((c) => ({ ...c, [platform]: '' }));
       setStatus((s) => ({ ...s, [platform]: 'cleared' }));
       setTimeout(() => setStatus((s) => ({ ...s, [platform]: null })), 2000);
     } catch {
@@ -549,28 +554,25 @@ function CookieSection() {
     <div className="settings-section">
       <h3>Platform Cookies</h3>
       <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 12, lineHeight: 1.5 }}>
-        Paste cookie headers from your browser DevTools (Network tab → request headers → Cookie)
-        to enable authenticated downloads from TikTok and Instagram.
+        Paste cookie headers from your browser DevTools (Network tab &rarr; request headers &rarr; Cookie)
+        to enable authenticated downloads. YouTube cookies help bypass age-gating and rate limits.
       </p>
 
-      {[
-        { platform: 'tiktok', label: 'TikTok', value: tiktokCookie, setter: setTiktokCookie },
-        { platform: 'instagram', label: 'Instagram', value: instagramCookie, setter: setInstagramCookie },
-      ].map(({ platform, label, value, setter }) => (
+      {COOKIE_PLATFORMS.map(({ platform, label }) => (
         <div key={platform} className="cookie-platform-row">
           <div className="cookie-platform-label">{label}</div>
           <textarea
             className="cookie-textarea"
             rows={3}
             placeholder={`Paste ${label} cookie string here...`}
-            value={value}
-            onChange={(e) => setter(e.target.value)}
+            value={cookies[platform] || ''}
+            onChange={(e) => setCookies((c) => ({ ...c, [platform]: e.target.value }))}
           />
           <div className="cookie-actions-row">
             <button
               className="cookie-save-btn"
-              onClick={() => handleSave(platform, value)}
-              disabled={!value.trim()}
+              onClick={() => handleSave(platform)}
+              disabled={!(cookies[platform] || '').trim()}
             >
               Save
             </button>
