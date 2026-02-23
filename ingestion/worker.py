@@ -5,25 +5,20 @@ Processes video sources: download -> analyze -> split -> transcode -> transcribe
 """
 
 import os
-import sys
 import json
 import time
 import uuid
+import sqlite3
 import signal
 import logging
 import subprocess
-import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
-import redis
-import psycopg2
-import psycopg2.extras
 from minio import Minio
 from faster_whisper import WhisperModel
 from keybert import KeyBERT
-import meilisearch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,9 +26,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("worker")
 
-# Configuration
-DB_URL = os.getenv("DATABASE_URL", "postgres://clipfeed:changeme@localhost:5432/clipfeed")
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+DB_PATH = os.getenv("DB_PATH", "/data/clipfeed.db")
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "clipfeed")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "changeme123")
@@ -63,11 +56,21 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+def open_db():
+    """Open a SQLite connection with WAL mode and row factory."""
+    db = sqlite3.connect(DB_PATH, isolation_level=None, check_same_thread=False)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=5000")
+    db.execute("PRAGMA foreign_keys=ON")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.row_factory = sqlite3.Row
+    return db
+
+
 class Worker:
     def __init__(self):
-        self.db = psycopg2.connect(DB_URL)
-        self.db.autocommit = True
-        self.rdb = redis.from_url(REDIS_URL)
+        # Main-thread connection used only for job popping
+        self.db = open_db()
         self.minio = Minio(
             MINIO_ENDPOINT,
             access_key=MINIO_ACCESS,
@@ -79,50 +82,63 @@ class Worker:
         if not self.minio.bucket_exists(MINIO_BUCKET):
             self.minio.make_bucket(MINIO_BUCKET)
 
-        # Whisper transcription model
         self.whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
-
-        # Topic extraction model
         self.kw_model = KeyBERT(model='all-MiniLM-L6-v2')
 
-        # Meilisearch client
-        self.meili = meilisearch.Client(
-            os.getenv("MEILI_URL", "http://meilisearch:7700"),
-            os.getenv("MEILI_KEY", "")
-        )
-        self.meili_index = self.meili.index('clips')
+    def _pop_job(self):
+        """Atomically claim one pending job. Returns sqlite3.Row or None."""
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+            row = self.db.execute("""
+                UPDATE jobs
+                SET status = 'running',
+                    started_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                    attempts = attempts + 1
+                WHERE id = (
+                    SELECT id FROM jobs
+                    WHERE status = 'queued'
+                    ORDER BY priority DESC, created_at ASC
+                    LIMIT 1
+                )
+                RETURNING id, payload
+            """).fetchone()
+            self.db.execute("COMMIT")
+            return row
+        except Exception as e:
+            try:
+                self.db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     def run(self):
         log.info(f"Worker started (max_concurrent={MAX_CONCURRENT})")
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
             while not shutdown:
-                job_id = self.rdb.blpop("clipfeed:jobs", timeout=5)
-                if job_id is None:
-                    continue
-
-                job_id = job_id[1].decode("utf-8")
-                log.info(f"Processing job {job_id}")
-                pool.submit(self.process_job, job_id)
+                try:
+                    row = self._pop_job()
+                    if row is None:
+                        time.sleep(2)
+                        continue
+                    job_id = row["id"]
+                    payload = json.loads(row["payload"])
+                    log.info(f"Claimed job {job_id}")
+                    pool.submit(self.process_job, job_id, payload)
+                except Exception as e:
+                    log.error(f"Job pop failed: {e}")
+                    time.sleep(5)
 
         log.info("Worker shut down")
 
-    def process_job(self, job_id: str):
-        cur = self.db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    def process_job(self, job_id: str, payload: dict):
+        """Each thread gets its own DB connection."""
+        db = open_db()
         try:
-            cur.execute(
-                "UPDATE jobs SET status = 'running', started_at = now(), attempts = attempts + 1 WHERE id = %s RETURNING *",
-                (job_id,),
-            )
-            job = cur.fetchone()
-            if not job:
-                log.warning(f"Job {job_id} not found")
-                return
-
-            payload = job["payload"] if isinstance(job["payload"], dict) else json.loads(job["payload"])
-            source_id = payload.get("source_id") or str(job["source_id"])
+            source_id = payload.get("source_id")
             platform = payload.get("platform", "")
+            url = payload.get("url", "")
 
-            cur.execute("UPDATE sources SET status = 'downloading' WHERE id = %s", (source_id,))
+            db.execute("UPDATE sources SET status = 'downloading' WHERE id = ?", (source_id,))
 
             work_path = WORK_DIR / job_id
             work_path.mkdir(parents=True, exist_ok=True)
@@ -131,23 +147,22 @@ class Worker:
                 # Fetch platform cookie if applicable
                 cookie_str = None
                 if platform in ("tiktok", "instagram", "twitter"):
-                    cur.execute("""
+                    row = db.execute("""
                         SELECT cookie_str FROM platform_cookies
-                        WHERE user_id = (SELECT submitted_by FROM sources WHERE id = %s)
-                          AND platform = %s AND is_active = true
-                    """, (source_id, platform))
-                    row = cur.fetchone()
+                        WHERE user_id = (SELECT submitted_by FROM sources WHERE id = ?)
+                          AND platform = ? AND is_active = 1
+                    """, (source_id, platform)).fetchone()
                     if row:
                         cookie_str = row["cookie_str"]
 
                 # Step 1: Download
-                source_file = self.download(payload["url"], work_path, cookie_str=cookie_str)
-                cur.execute("UPDATE sources SET status = 'processing' WHERE id = %s", (source_id,))
+                source_file = self.download(url, work_path, cookie_str=cookie_str)
+                db.execute("UPDATE sources SET status = 'processing' WHERE id = ?", (source_id,))
 
                 # Step 2: Extract metadata
                 metadata = self.extract_metadata(source_file)
-                cur.execute(
-                    "UPDATE sources SET title = %s, duration_seconds = %s, metadata = %s WHERE id = %s",
+                db.execute(
+                    "UPDATE sources SET title = ?, duration_seconds = ?, metadata = ? WHERE id = ?",
                     (metadata.get("title"), metadata.get("duration"), json.dumps(metadata), source_id),
                 )
 
@@ -158,28 +173,28 @@ class Worker:
                 clip_ids = []
                 for i, seg in enumerate(segments):
                     clip_id = self.process_segment(
-                        cur, source_file, source_id, seg, i, work_path, metadata
+                        db, source_file, source_id, seg, i, work_path, metadata
                     )
                     if clip_id:
                         clip_ids.append(clip_id)
 
                 # Mark source complete
-                cur.execute("UPDATE sources SET status = 'complete' WHERE id = %s", (source_id,))
+                db.execute("UPDATE sources SET status = 'complete' WHERE id = ?", (source_id,))
 
                 # Mark job complete
-                cur.execute(
-                    "UPDATE jobs SET status = 'complete', completed_at = now(), result = %s WHERE id = %s",
+                db.execute(
+                    "UPDATE jobs SET status = 'complete', completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), result = ? WHERE id = ?",
                     (json.dumps({"clip_ids": clip_ids, "clip_count": len(clip_ids)}), job_id),
                 )
                 log.info(f"Job {job_id} complete: {len(clip_ids)} clips created")
 
             except Exception as e:
                 log.error(f"Job {job_id} failed: {e}")
-                cur.execute(
-                    "UPDATE jobs SET status = 'failed', error = %s WHERE id = %s",
+                db.execute(
+                    "UPDATE jobs SET status = 'failed', error = ? WHERE id = ?",
                     (str(e), job_id),
                 )
-                cur.execute("UPDATE sources SET status = 'failed' WHERE id = %s", (source_id,))
+                db.execute("UPDATE sources SET status = 'failed' WHERE id = ?", (source_id,))
 
             finally:
                 # Cleanup working directory
@@ -188,7 +203,7 @@ class Worker:
         except Exception as e:
             log.error(f"Fatal error processing job {job_id}: {e}")
         finally:
-            cur.close()
+            db.close()
 
     def download(self, url: str, work_path: Path, cookie_str: str = None) -> Path:
         """Download video using yt-dlp."""
@@ -204,8 +219,6 @@ class Worker:
             "--socket-timeout", "30",
         ]
 
-        # Write Netscape cookie file if cookies provided
-        cookie_file = None
         if cookie_str:
             cookie_file = work_path / "cookies.txt"
             cookie_file.write_text(cookie_str)
@@ -357,26 +370,18 @@ class Worker:
             log.warning(f"Topic extraction failed: {e}")
             return []
 
-    def _index_clip(self, clip_id, title, transcript, topics, platform,
-                    channel_name, duration, score):
-        """Index clip in Meilisearch for full-text search."""
+    def _index_clip_fts(self, db, clip_id, title, transcript, platform, channel_name):
+        """Insert into FTS5 table (replaces Meilisearch)."""
         try:
-            self.meili_index.add_documents([{
-                'id': clip_id,
-                'title': title,
-                'transcript': transcript[:2000],
-                'topics': topics,
-                'platform': platform,
-                'channel_name': channel_name or '',
-                'duration_seconds': round(duration, 1),
-                'content_score': score,
-                'created_at': int(time.time()),
-            }])
+            db.execute(
+                "INSERT INTO clips_fts(clip_id, title, transcript, platform, channel_name) VALUES (?, ?, ?, ?, ?)",
+                (clip_id, title or '', (transcript or '')[:2000], platform or '', channel_name or ''),
+            )
         except Exception as e:
-            log.warning(f"Failed to index clip {clip_id}: {e}")
+            log.warning(f"FTS index failed for {clip_id}: {e}")
 
     def process_segment(
-        self, cur, source_file: Path, source_id: str,
+        self, db, source_file: Path, source_id: str,
         segment: dict, index: int, work_path: Path, metadata: dict
     ) -> str:
         """Process a single clip segment: transcode, thumbnail, transcribe, upload."""
@@ -402,62 +407,55 @@ class Worker:
             # Extract topics
             topics = self._extract_topics(transcript, metadata.get("title", ""))
 
-            # Upload to MinIO
             clip_key = f"clips/{clip_id}/{clip_filename}"
             thumb_key = f"clips/{clip_id}/thumbnail.jpg"
 
             file_size = clip_path.stat().st_size
 
-            self.minio.fput_object(
-                MINIO_BUCKET, clip_key, str(clip_path),
-                content_type="video/mp4",
-            )
+            self.minio.fput_object(MINIO_BUCKET, clip_key, str(clip_path), content_type="video/mp4")
 
             if thumb_path.exists():
-                self.minio.fput_object(
-                    MINIO_BUCKET, thumb_key, str(thumb_path),
-                    content_type="image/jpeg",
-                )
+                self.minio.fput_object(MINIO_BUCKET, thumb_key, str(thumb_path), content_type="image/jpeg")
 
             # Probe the output clip for dimensions
             clip_meta = self.extract_metadata(clip_path)
 
-            # Determine expiry
-            expires_at = datetime.utcnow() + timedelta(days=CLIP_TTL_DAYS)
+            expires_at = (datetime.utcnow() + timedelta(days=CLIP_TTL_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
             # Generate a title from the transcript or source
             title = self._generate_clip_title(transcript, metadata.get("title", ""), index)
 
-            # Get source info for indexing
-            cur.execute("SELECT platform, channel_name FROM sources WHERE id = %s", (source_id,))
-            source_row = cur.fetchone()
-            platform = source_row["platform"] if source_row else ""
-            channel_name = source_row["channel_name"] if source_row else ""
+            row = db.execute("SELECT platform, channel_name FROM sources WHERE id = ?", (source_id,)).fetchone()
+            platform = row["platform"] if row else ""
+            channel_name = row["channel_name"] if row else ""
 
             content_score = 0.5
 
-            # Insert clip record
-            cur.execute("""
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""
                 INSERT INTO clips (
                     id, source_id, title, duration_seconds, start_time, end_time,
                     storage_key, thumbnail_key, width, height, file_size_bytes,
                     transcript, topics, content_score, expires_at, status
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ready')
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')
             """, (
                 clip_id, source_id, title, duration, start, end,
                 clip_key, thumb_key,
                 clip_meta.get("width", 0), clip_meta.get("height", 0),
-                file_size, transcript, topics, content_score, expires_at,
+                file_size, transcript, json.dumps(topics), content_score, expires_at,
             ))
 
-            # Index in Meilisearch
-            self._index_clip(clip_id, title, transcript, topics, platform,
-                             channel_name, duration, content_score)
+            self._index_clip_fts(db, clip_id, title, transcript, platform, channel_name)
+            db.execute("COMMIT")
 
             log.info(f"Clip {clip_id} created ({duration:.1f}s, topics={topics})")
             return clip_id
 
         except Exception as e:
+            try:
+                db.execute("ROLLBACK")
+            except Exception:
+                pass
             log.error(f"Failed to process segment {index}: {e}")
             return None
 
