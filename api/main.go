@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -486,7 +487,26 @@ func (a *App) handleStreamClip(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "failed to generate stream URL"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"url": presignedURL.String()})
+	streamURL, err := buildBrowserStreamURL(presignedURL.String())
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to build stream URL"})
+		return
+	}
+
+	writeJSON(w, 200, map[string]string{"url": streamURL})
+}
+
+func buildBrowserStreamURL(presigned string) (string, error) {
+	u, err := url.Parse(presigned)
+	if err != nil || u.Path == "" {
+		return "", fmt.Errorf("invalid presigned URL")
+	}
+
+	streamPath := "/storage" + u.EscapedPath()
+	if u.RawQuery != "" {
+		streamPath += "?" + u.RawQuery
+	}
+	return streamPath, nil
 }
 
 // --- Interactions ---
@@ -617,7 +637,7 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT j.id, j.source_id, j.job_type, j.status, j.error,
 		       j.attempts, j.max_attempts, j.started_at, j.completed_at, j.created_at,
-		       s.url, s.platform, s.title
+		       s.url, s.platform, s.title, s.channel_name, s.thumbnail_url, s.external_id, s.metadata
 		FROM jobs j
 		LEFT JOIN sources s ON j.source_id = s.id
 		ORDER BY j.created_at DESC LIMIT 50
@@ -631,17 +651,26 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	var jobs []map[string]interface{}
 	for rows.Next() {
 		var id, jobType, status, createdAt string
-		var sourceID, errMsg, startedAt, completedAt, url, platform, title *string
+		var sourceID, errMsg, startedAt, completedAt, url, platform, title, channelName, thumbnailURL, externalID, sourceMetadata *string
 		var attempts, maxAttempts int
 		rows.Scan(&id, &sourceID, &jobType, &status, &errMsg,
 			&attempts, &maxAttempts, &startedAt, &completedAt, &createdAt,
-			&url, &platform, &title)
+			&url, &platform, &title, &channelName, &thumbnailURL, &externalID, &sourceMetadata)
+		var parsedSourceMetadata interface{} = nil
+		if sourceMetadata != nil && strings.TrimSpace(*sourceMetadata) != "" {
+			if err := json.Unmarshal([]byte(*sourceMetadata), &parsedSourceMetadata); err != nil {
+				// Keep the original string if metadata is malformed JSON.
+				parsedSourceMetadata = *sourceMetadata
+			}
+		}
 		job := map[string]interface{}{
 			"id": id, "source_id": sourceID, "job_type": jobType,
 			"status": status, "error": errMsg,
 			"attempts": attempts, "max_attempts": maxAttempts,
 			"started_at": startedAt, "completed_at": completedAt, "created_at": createdAt,
 			"url": url, "platform": platform, "title": title,
+			"channel_name": channelName, "thumbnail_url": thumbnailURL,
+			"external_id": externalID, "source_metadata": parsedSourceMetadata,
 		}
 		jobs = append(jobs, job)
 	}

@@ -156,25 +156,61 @@ class Worker:
                     if row:
                         cookie_str = row["cookie_str"]
 
+                # Step 0: Fetch source metadata early so failed downloads still have context
+                source_metadata = self.fetch_source_metadata(url, work_path, cookie_str=cookie_str)
+                if source_metadata:
+                    db.execute(
+                        """
+                        UPDATE sources
+                        SET external_id = ?,
+                            title = ?,
+                            channel_name = ?,
+                            thumbnail_url = ?,
+                            duration_seconds = ?,
+                            metadata = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            source_metadata.get("id"),
+                            source_metadata.get("title"),
+                            source_metadata.get("uploader") or source_metadata.get("channel"),
+                            source_metadata.get("thumbnail"),
+                            source_metadata.get("duration"),
+                            json.dumps(source_metadata),
+                            source_id,
+                        ),
+                    )
+
                 # Step 1: Download
                 source_file = self.download(url, work_path, cookie_str=cookie_str)
                 db.execute("UPDATE sources SET status = 'processing' WHERE id = ?", (source_id,))
 
                 # Step 2: Extract metadata
-                metadata = self.extract_metadata(source_file)
+                media_metadata = self.extract_metadata(source_file)
+                merged_metadata = dict(source_metadata) if source_metadata else {}
+                if media_metadata:
+                    merged_metadata["media_probe"] = media_metadata
                 db.execute(
                     "UPDATE sources SET title = ?, duration_seconds = ?, metadata = ? WHERE id = ?",
-                    (metadata.get("title"), metadata.get("duration"), json.dumps(metadata), source_id),
+                    (
+                        (source_metadata or {}).get("title") or media_metadata.get("title"),
+                        (source_metadata or {}).get("duration") or media_metadata.get("duration"),
+                        json.dumps(merged_metadata),
+                        source_id,
+                    ),
                 )
 
                 # Step 3: Detect scenes and split
-                segments = self.detect_scenes(source_file, metadata.get("duration", 0))
+                segments = self.detect_scenes(source_file, media_metadata.get("duration", 0))
 
                 # Step 4: Process each segment
                 clip_ids = []
+                segment_metadata = dict(media_metadata)
+                if source_metadata and source_metadata.get("title"):
+                    segment_metadata["title"] = source_metadata.get("title")
                 for i, seg in enumerate(segments):
                     clip_id = self.process_segment(
-                        db, source_file, source_id, seg, i, work_path, metadata
+                        db, source_file, source_id, seg, i, work_path, segment_metadata
                     )
                     if clip_id:
                         clip_ids.append(clip_id)
@@ -240,6 +276,35 @@ class Worker:
                 return f
 
         raise RuntimeError("Download completed but no video file found")
+
+    def fetch_source_metadata(self, url: str, work_path: Path, cookie_str: str = None) -> dict:
+        """Fetch source metadata with yt-dlp without downloading media."""
+        cmd = [
+            "yt-dlp",
+            "--no-playlist",
+            "--dump-single-json",
+            "--skip-download",
+            "--socket-timeout", "30",
+            url,
+        ]
+
+        if cookie_str:
+            cookie_file = work_path / "cookies_metadata.txt"
+            cookie_file.write_text(cookie_str)
+            cmd += ["--cookies", str(cookie_file)]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if result.returncode != 0:
+            log.warning(f"yt-dlp metadata fetch failed for {url}: {result.stderr[:300]}")
+            return {}
+
+        try:
+            data = json.loads(result.stdout)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            log.warning(f"Failed parsing yt-dlp metadata for {url}: {e}")
+        return {}
 
     def extract_metadata(self, video_path: Path) -> dict:
         """Extract video metadata using ffprobe."""
