@@ -34,6 +34,8 @@ MINIO_BUCKET = os.getenv("MINIO_BUCKET", "clips")
 MINIO_SSL = os.getenv("MINIO_USE_SSL", "false") == "true"
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")
 MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_JOBS", "2"))
+FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")
+WHISPER_THREADS = int(os.getenv("WHISPER_THREADS", "4"))
 CLIP_TTL_DAYS = int(os.getenv("CLIP_TTL_DAYS", "30"))
 WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/clipfeed"))
 
@@ -58,6 +60,19 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+
+def _detect_device() -> tuple[str, str]:
+    """Pick CUDA when an NVIDIA GPU is reachable, otherwise fall back to CPU."""
+    try:
+        import ctranslate2
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            log.info("CUDA device detected — Whisper will use GPU")
+            return "cuda", "float16"
+    except Exception:
+        pass
+    log.info("No CUDA device found — Whisper will use CPU")
+    return "cpu", "int8"
 
 
 def open_db():
@@ -86,7 +101,11 @@ class Worker:
         if not self.minio.bucket_exists(MINIO_BUCKET):
             self.minio.make_bucket(MINIO_BUCKET)
 
-        self.whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+        device, compute_type = _detect_device()
+        whisper_kwargs = dict(device=device, compute_type=compute_type)
+        if device == "cpu":
+            whisper_kwargs["cpu_threads"] = WHISPER_THREADS
+        self.whisper = WhisperModel(WHISPER_MODEL, **whisper_kwargs)
         self.kw_model = KeyBERT(model='all-MiniLM-L6-v2')
 
     def _pop_job(self):
@@ -378,7 +397,8 @@ class Worker:
 
         try:
             cmd = [
-                "ffmpeg", "-i", str(video_path),
+                "ffmpeg", "-threads", FFMPEG_THREADS,
+                "-i", str(video_path),
                 "-af", f"silencedetect=noise={SILENCE_NOISE_DB}dB:d={SILENCE_MIN_DURATION}",
                 "-f", "null", "-",
             ]
@@ -572,6 +592,7 @@ class Worker:
 
         cmd = [
             "ffmpeg", "-y",
+            "-threads", FFMPEG_THREADS,
             "-ss", str(start),
             "-i", str(source),
             "-t", str(duration),
@@ -579,6 +600,7 @@ class Worker:
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",
+            "-threads", FFMPEG_THREADS,
             "-c:a", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
@@ -594,6 +616,7 @@ class Worker:
         """Generate a thumbnail from the middle of the clip."""
         cmd = [
             "ffmpeg", "-y",
+            "-threads", FFMPEG_THREADS,
             "-i", str(clip_path),
             "-vf", "thumbnail,scale=480:-1",
             "-frames:v", "1",
