@@ -65,6 +65,13 @@ export default defineConfig({
   ],
   server: {
     port: 3000,
-    proxy: { '/api': 'http://localhost:8080' }
+    proxy: {
+      '/api': 'http://localhost:8080',
+      '/storage': {
+        target: 'http://localhost:9000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/storage/, ''),
+      },
+    }
   }
 });
