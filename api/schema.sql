@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     max_clip_seconds    INTEGER DEFAULT 120,
     autoplay            INTEGER DEFAULT 1,
     nsfw_filter         INTEGER DEFAULT 1,
+    scout_threshold     REAL DEFAULT 6.0,
     updated_at          TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

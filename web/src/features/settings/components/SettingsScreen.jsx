@@ -3,9 +3,12 @@ import { api } from '../../../shared/api/clipfeedApi';
 import { useInstallPrompt } from '../../../shared/hooks/useInstallPrompt';
 import { CookieSection } from './CookieSection';
 import { TopicWeights } from './TopicWeights';
+import { ScoutScreen } from './ScoutScreen';
+import '../scout.css';
 
 export function SettingsScreen({ onLogout }) {
   const { canInstall, showIOSGuide, installed, promptInstall } = useInstallPrompt();
+  const [subscreen, setSubscreen] = useState(null);
 
   const [prefs, setPrefs] = useState({
     exploration_rate: 0.3,
@@ -13,6 +16,7 @@ export function SettingsScreen({ onLogout }) {
     max_clip_seconds: 120,
     autoplay: true,
     topic_weights: {},
+    scout_threshold: 6.0,
   });
 
   useEffect(() => {
@@ -29,6 +33,16 @@ export function SettingsScreen({ onLogout }) {
     const updated = { ...prefs, [key]: value };
     setPrefs(updated);
     api.updatePreferences(updated).catch(console.error);
+  }
+
+  if (subscreen === 'scout') {
+    return (
+      <ScoutScreen
+        onBack={() => setSubscreen(null)}
+        threshold={prefs.scout_threshold}
+        onThresholdChange={(v) => handleChange('scout_threshold', v)}
+      />
+    );
   }
 
   return (
@@ -94,6 +108,18 @@ export function SettingsScreen({ onLogout }) {
           currentWeights={prefs.topic_weights}
           onWeightsChange={(tw) => setPrefs((prev) => ({ ...prev, topic_weights: tw }))}
         />
+      </div>
+
+      <div className="settings-section">
+        <h3>Discovery</h3>
+        <div className="scout-nav-row" onClick={() => setSubscreen('scout')}>
+          <span className="scout-nav-label">Content Scout</span>
+          <span className="scout-nav-chevron">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </span>
+        </div>
       </div>
 
       {api.getToken() && <CookieSection />}

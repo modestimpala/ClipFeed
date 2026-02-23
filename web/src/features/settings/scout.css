@@ -1,0 +1,406 @@
+/* Scout Screen */
+
+.scout-screen {
+  height: 100%;
+  overflow-y: auto;
+  padding: 0 16px calc(80px + var(--safe-bottom));
+  padding-top: var(--safe-top);
+}
+
+.scout-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0 12px;
+}
+
+.scout-back-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.scout-header-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+/* Tabs */
+
+.scout-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.scout-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 0;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.scout-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Config sections */
+
+.scout-section {
+  margin-bottom: 24px;
+}
+
+.scout-section h3 {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin-bottom: 12px;
+}
+
+/* Source cards */
+
+.scout-source-card {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+  margin-bottom: 8px;
+}
+
+.scout-source-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.scout-source-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: var(--accent);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.scout-source-id {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scout-source-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.scout-interval-select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.scout-toggle-btn {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.scout-toggle-btn.active {
+  background: var(--success);
+  color: #fff;
+  border-color: var(--success);
+}
+
+.scout-delete-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 5px;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s;
+}
+
+.scout-delete-btn:hover {
+  color: var(--accent);
+}
+
+.scout-source-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Add source */
+
+.scout-add-btn {
+  width: 100%;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.scout-add-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.scout-add-form {
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}
+
+.scout-add-form-row {
+  margin-bottom: 12px;
+}
+
+.scout-form-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.scout-form-select,
+.scout-form-input {
+  width: 100%;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  padding: 8px 10px;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.scout-form-input:focus,
+.scout-form-select:focus {
+  border-color: var(--accent);
+}
+
+.scout-add-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.scout-submit-btn {
+  padding: 8px 20px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.scout-submit-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.scout-cancel-btn {
+  padding: 8px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Candidates */
+
+.scout-pill-toggle {
+  display: flex;
+  gap: 0;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  margin-bottom: 16px;
+}
+
+.scout-pill {
+  flex: 1;
+  background: none;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--text-dim);
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.scout-pill.active {
+  background: var(--bg-surface);
+  color: var(--text);
+}
+
+.scout-candidate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scout-candidate-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.scout-candidate-card:active {
+  background: var(--bg-surface);
+}
+
+.scout-candidate-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.scout-candidate-title {
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scout-candidate-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.scout-candidate-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.scout-score-badge {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.scout-score-badge.green {
+  background: rgba(52, 199, 89, 0.15);
+  color: var(--success);
+}
+
+.scout-score-badge.red {
+  background: rgba(255, 69, 58, 0.12);
+  color: #ff453a;
+}
+
+.scout-ingest-btn {
+  font-size: 12px;
+  font-weight: 600;
+  font-family: var(--font);
+  padding: 5px 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.scout-empty {
+  text-align: center;
+  padding: 24px 16px;
+  color: var(--text-dim);
+  font-size: 14px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+}
+
+/* Settings screen integration */
+
+.scout-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.scout-nav-row:active {
+  background: var(--bg-surface);
+}
+
+.scout-nav-label {
+  font-size: 15px;
+}
+
+.scout-nav-chevron {
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+}
