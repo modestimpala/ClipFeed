@@ -13,3 +13,4 @@ dist/
 build/
 go.sum
 .worktrees/
+.cache/

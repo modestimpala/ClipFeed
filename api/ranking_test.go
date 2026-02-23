@@ -41,7 +41,7 @@ func TestHandleFeed_UsesLTRRanking(t *testing.T) {
 		NumFeatures: 13,
 		Trees: [][]LTRTree{
 			{
-				{FeatureIndex: 1, Threshold: 10, LeftChild: 1, RightChild: 2},
+				{FeatureIndex: 0, Threshold: 0.5, LeftChild: 1, RightChild: 2},
 				{LeafValue: 2.0, IsLeaf: true},
 				{LeafValue: -1.0, IsLeaf: true},
 			},
@@ -88,7 +88,7 @@ func TestHandleFeed_Filtered_UsesLTRRanking(t *testing.T) {
 		NumFeatures: 13,
 		Trees: [][]LTRTree{
 			{
-				{FeatureIndex: 1, Threshold: 10, LeftChild: 1, RightChild: 2},
+				{FeatureIndex: 0, Threshold: 0.5, LeftChild: 1, RightChild: 2},
 				{LeafValue: 3.0, IsLeaf: true},
 				{LeafValue: -1.0, IsLeaf: true},
 			},

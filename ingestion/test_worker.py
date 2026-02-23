@@ -425,5 +425,55 @@ class TestPopJobRespectsRunAfter(RetryTestBase):
         self.assertIsNotNone(row)
 
 
+class TestReclaimStaleRunningJobs(RetryTestBase):
+    """_reclaim_stale_running_jobs requeues/fails stale running jobs."""
+
+    def test_requeues_stale_running_job_below_max_attempts(self):
+        self._insert_job(attempts=1, max_attempts=3, status="running")
+        self.db.execute(
+            "UPDATE jobs SET started_at = datetime('now', '-6 hours') WHERE id = 'j1'"
+        )
+
+        w = object.__new__(worker.Worker)
+        w.db = self.db
+
+        requeued, failed = w._reclaim_stale_running_jobs()
+        self.assertEqual(requeued, 1)
+        self.assertEqual(failed, 0)
+
+        row = self.db.execute(
+            "SELECT status, run_after, error FROM jobs WHERE id = 'j1'"
+        ).fetchone()
+        self.assertEqual(row["status"], "queued")
+        self.assertIsNotNone(row["run_after"])
+        self.assertIn("stale watchdog", row["error"])
+
+        src = self.db.execute("SELECT status FROM sources WHERE id = 's1'").fetchone()
+        self.assertEqual(src["status"], "pending")
+
+    def test_fails_stale_running_job_at_max_attempts(self):
+        self._insert_job(attempts=3, max_attempts=3, status="running")
+        self.db.execute(
+            "UPDATE jobs SET started_at = datetime('now', '-6 hours') WHERE id = 'j1'"
+        )
+
+        w = object.__new__(worker.Worker)
+        w.db = self.db
+
+        requeued, failed = w._reclaim_stale_running_jobs()
+        self.assertEqual(requeued, 0)
+        self.assertEqual(failed, 1)
+
+        row = self.db.execute(
+            "SELECT status, completed_at, error FROM jobs WHERE id = 'j1'"
+        ).fetchone()
+        self.assertEqual(row["status"], "failed")
+        self.assertIsNotNone(row["completed_at"])
+        self.assertIn("stale watchdog", row["error"])
+
+        src = self.db.execute("SELECT status FROM sources WHERE id = 's1'").fetchone()
+        self.assertEqual(src["status"], "failed")
+
+
 if __name__ == "__main__":
     unittest.main()

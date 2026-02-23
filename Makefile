@@ -34,7 +34,13 @@ score:
 	docker compose exec score-updater python score_updater.py
 
 test-api-docker:
-	docker run --rm -v $(PWD)/api:/src -w /src golang:1.24 sh -lc 'go test ./...'
+	docker run --rm \
+		-e GOMODCACHE=/go/pkg/mod \
+		-e GOCACHE=/root/.cache/go-build \
+		-v $(PWD)/api:/src \
+		-v $(PWD)/.cache/go-mod:/go/pkg/mod \
+		-v $(PWD)/.cache/go-build:/root/.cache/go-build \
+		-w /src golang:1.22-alpine sh -c 'go test ./... 2>&1 | cat'
 
 dev-api:
 	cd api && go run .

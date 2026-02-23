@@ -53,6 +53,7 @@ SILENCE_MIN_DURATION = 0.5
 
 # Retry parameters
 RETRY_BASE_DELAY = 30  # seconds; doubles each attempt (30s, 60s, 120s, …)
+JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "120"))
 
 shutdown = False
 
@@ -237,9 +238,34 @@ class Worker:
 
     def run(self):
         log.info(f"Worker started (max_concurrent={MAX_CONCURRENT})")
+        inflight = set()
+        last_reclaim_at = 0.0
+
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
             while not shutdown:
                 try:
+                    done = [f for f in list(inflight) if f.done()]
+                    for fut in done:
+                        inflight.discard(fut)
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            log.error(f"Background job crashed: {e}")
+
+                    now = time.time()
+                    if now-last_reclaim_at >= 60:
+                        requeued, failed = self._reclaim_stale_running_jobs()
+                        if requeued or failed:
+                            log.warning(
+                                f"Recovered stale running jobs (>{JOB_STALE_MINUTES}m): "
+                                f"requeued={requeued}, failed={failed}"
+                            )
+                        last_reclaim_at = now
+
+                    if len(inflight) >= MAX_CONCURRENT:
+                        time.sleep(1)
+                        continue
+
                     row = self._pop_job()
                     if row is None:
                         time.sleep(2)
@@ -247,12 +273,86 @@ class Worker:
                     job_id = row["id"]
                     payload = json.loads(row["payload"])
                     log.info(f"Claimed job {job_id}")
-                    pool.submit(self.process_job, job_id, payload)
+                    fut = pool.submit(self.process_job, job_id, payload)
+                    inflight.add(fut)
                 except Exception as e:
                     log.error(f"Job pop failed: {e}")
                     time.sleep(5)
 
         log.info("Worker shut down")
+
+    def _reclaim_stale_running_jobs(self) -> tuple[int, int]:
+        """
+        Reclaim jobs stuck in 'running' beyond JOB_STALE_MINUTES.
+        - jobs with attempts < max_attempts are re-queued
+        - jobs at max attempts are marked failed
+        Returns: (requeued_count, failed_count)
+        """
+        cutoff = f"-{JOB_STALE_MINUTES} minutes"
+        stale_msg = f"stale watchdog: recovered running job older than {JOB_STALE_MINUTES}m"
+        try:
+            self.db.execute("BEGIN IMMEDIATE")
+
+            requeued = self.db.execute(
+                """
+                UPDATE jobs
+                SET status = 'queued',
+                    run_after = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                    error = CASE
+                        WHEN error IS NULL OR error = '' THEN ?
+                        ELSE error || ' | ' || ?
+                    END
+                WHERE status = 'running'
+                  AND started_at IS NOT NULL
+                  AND datetime(started_at) <= datetime('now', ?)
+                  AND attempts < max_attempts
+                RETURNING id, source_id
+                """,
+                (stale_msg, stale_msg, cutoff),
+            ).fetchall()
+
+            failed = self.db.execute(
+                """
+                UPDATE jobs
+                SET status = 'failed',
+                    completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                    error = CASE
+                        WHEN error IS NULL OR error = '' THEN ?
+                        ELSE error || ' | ' || ?
+                    END
+                WHERE status = 'running'
+                  AND started_at IS NOT NULL
+                  AND datetime(started_at) <= datetime('now', ?)
+                  AND attempts >= max_attempts
+                RETURNING id, source_id
+                """,
+                (stale_msg, stale_msg, cutoff),
+            ).fetchall()
+
+            for row in requeued:
+                source_id = row["source_id"]
+                if source_id:
+                    self.db.execute(
+                        "UPDATE sources SET status = 'pending' WHERE id = ?",
+                        (source_id,),
+                    )
+
+            for row in failed:
+                source_id = row["source_id"]
+                if source_id:
+                    self.db.execute(
+                        "UPDATE sources SET status = 'failed' WHERE id = ?",
+                        (source_id,),
+                    )
+
+            self.db.execute("COMMIT")
+            return len(requeued), len(failed)
+        except Exception:
+            try:
+                self.db.execute("ROLLBACK")
+            except Exception:
+                pass
+            return 0, 0
 
     def process_job(self, job_id: str, payload: dict):
         """Each thread gets its own DB connection."""

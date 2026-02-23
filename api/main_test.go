@@ -686,6 +686,42 @@ func TestHandleDeleteCookie(t *testing.T) {
 	}
 }
 
+func TestHandleListCookieStatus(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "cookiestatus", "password123")
+
+	setBody := map[string]string{"cookie_str": "session_id=abc123"}
+	setReq := authRequest(t, app, "PUT", "/api/me/cookies/youtube", setBody, token)
+	setReq = withChiParam(setReq, "platform", "youtube")
+	setRec := httptest.NewRecorder()
+	app.handleSetCookie(setRec, setReq)
+	if setRec.Code != 200 {
+		t.Fatalf("set cookie status = %d, want 200", setRec.Code)
+	}
+
+	req := authRequest(t, app, "GET", "/api/me/cookies", nil, token)
+	rec := httptest.NewRecorder()
+	app.handleListCookieStatus(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeJSON(t, rec)
+	platforms := resp["platforms"].(map[string]interface{})
+	youtube := platforms["youtube"].(map[string]interface{})
+	if youtube["saved"] != true {
+		t.Fatalf("youtube saved = %v, want true", youtube["saved"])
+	}
+	tiktok := platforms["tiktok"].(map[string]interface{})
+	if tiktok["saved"] != false {
+		t.Fatalf("tiktok saved = %v, want false", tiktok["saved"])
+	}
+	if _, hasCookie := youtube["cookie_str"]; hasCookie {
+		t.Fatal("cookie_str must not be exposed by cookie status endpoint")
+	}
+}
+
 // --- Collections ---
 
 func TestCollectionCRUD(t *testing.T) {
