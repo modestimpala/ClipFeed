@@ -17,9 +17,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 
+import struct
+
+import numpy as np
 from minio import Minio
 from faster_whisper import WhisperModel
 from keybert import KeyBERT
+from sentence_transformers import SentenceTransformer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,6 +112,12 @@ class Worker:
             whisper_kwargs["cpu_threads"] = WHISPER_THREADS
         self.whisper = WhisperModel(WHISPER_MODEL, **whisper_kwargs)
         self.kw_model = KeyBERT(model='all-MiniLM-L6-v2')
+        self.text_embedder = SentenceTransformer('all-MiniLM-L6-v2')
+
+        self._clip_model = None
+        self._clip_preprocess = None
+        self._clip_tokenizer = None
+
         self._backfill_topic_graph()
 
     @staticmethod
@@ -567,6 +577,82 @@ class Worker:
             pos = end
         return segments
 
+    def _generate_text_embedding(self, text: str) -> bytes:
+        """Generate a 384-dim text embedding, returned as raw float32 bytes."""
+        if not text or not text.strip():
+            return None
+        vec = self.text_embedder.encode(text[:2000], normalize_embeddings=True)
+        return np.array(vec, dtype=np.float32).tobytes()
+
+    def _ensure_clip_model(self):
+        """Lazy-load CLIP ViT-B-32 on first use."""
+        if self._clip_model is not None:
+            return
+        try:
+            import open_clip
+            model, _, preprocess = open_clip.create_model_and_transforms(
+                'ViT-B-32', pretrained='laion2b_s34b_b79k'
+            )
+            model.eval()
+            self._clip_model = model
+            self._clip_preprocess = preprocess
+            self._clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
+            log.info("CLIP ViT-B-32 model loaded")
+        except Exception as e:
+            log.warning(f"CLIP model load failed (visual embeddings disabled): {e}")
+
+    def _extract_keyframes(self, clip_path: Path, n: int = 3) -> list:
+        """Extract n keyframes from a clip at evenly-spaced timestamps."""
+        from PIL import Image
+        import io
+
+        meta = self.extract_metadata(clip_path)
+        duration = meta.get("duration", 0)
+        if duration <= 0:
+            return []
+
+        frames = []
+        positions = [duration * (i + 1) / (n + 1) for i in range(n)]
+        for ts in positions:
+            try:
+                cmd = [
+                    "ffmpeg", "-y", "-ss", str(ts),
+                    "-i", str(clip_path),
+                    "-frames:v", "1", "-f", "image2pipe",
+                    "-vcodec", "png", "pipe:1",
+                ]
+                result = subprocess.run(cmd, capture_output=True, timeout=15)
+                if result.returncode == 0 and result.stdout:
+                    img = Image.open(io.BytesIO(result.stdout)).convert("RGB")
+                    frames.append(img)
+            except Exception:
+                continue
+        return frames
+
+    def _generate_visual_embedding(self, clip_path: Path) -> bytes:
+        """Generate a 512-dim CLIP visual embedding by averaging keyframe embeddings."""
+        self._ensure_clip_model()
+        if self._clip_model is None:
+            return None
+
+        import torch
+
+        frames = self._extract_keyframes(clip_path, n=3)
+        if not frames:
+            return None
+
+        try:
+            images = torch.stack([self._clip_preprocess(f) for f in frames])
+            with torch.no_grad():
+                feats = self._clip_model.encode_image(images)
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+            avg = feats.mean(dim=0)
+            avg = avg / avg.norm()
+            return avg.cpu().numpy().astype(np.float32).tobytes()
+        except Exception as e:
+            log.warning(f"Visual embedding generation failed: {e}")
+            return None
+
     def _extract_topics(self, transcript: str, source_title: str = "") -> list:
         """Extract key topics from transcript using KeyBERT."""
         if not transcript or len(transcript.split()) < 10:
@@ -618,6 +704,12 @@ class Worker:
 
             # Extract topics
             topics = self._extract_topics(transcript, metadata.get("title", ""))
+            topics = self._refine_topics_llm(transcript, topics)
+
+            # Generate embeddings
+            title_for_embed = self._generate_clip_title(transcript, metadata.get("title", ""), index)
+            text_emb = self._generate_text_embedding(f"{title_for_embed} {transcript}")
+            visual_emb = self._generate_visual_embedding(clip_path)
 
             clip_key = f"clips/{clip_id}/{clip_filename}"
             thumb_key = f"clips/{clip_id}/thumbnail.jpg"
@@ -668,6 +760,13 @@ class Worker:
                     log.warning(f"Failed to link clip {clip_id} to topic {topic_name}: {e}")
 
             self._index_clip_fts(db, clip_id, title, transcript, platform, channel_name)
+
+            if text_emb or visual_emb:
+                db.execute(
+                    "INSERT OR REPLACE INTO clip_embeddings (clip_id, text_embedding, visual_embedding, model_version) VALUES (?, ?, ?, ?)",
+                    (clip_id, text_emb, visual_emb, "minilm-v2+clip-vit-b32"),
+                )
+
             db.execute("COMMIT")
 
             log.info(f"Clip {clip_id} created ({duration:.1f}s, topics={topics})")
@@ -733,7 +832,15 @@ class Worker:
             return ""
 
     def _generate_clip_title(self, transcript: str, source_title: str, index: int) -> str:
-        """Generate a reasonable title for the clip."""
+        """Generate a title via LLM if available, otherwise fall back to heuristics."""
+        try:
+            from ollama_client import generate_title
+            llm_title = generate_title(transcript, source_title)
+            if llm_title and len(llm_title) > 3:
+                return llm_title
+        except Exception:
+            pass
+
         if transcript:
             words = transcript.split()[:10]
             if len(words) >= 3:
@@ -743,6 +850,19 @@ class Worker:
             return f"{source_title} (Part {index + 1})"
 
         return f"Clip {index + 1}"
+
+    def _refine_topics_llm(self, transcript: str, topics: list) -> list:
+        """Optionally refine topics via LLM. Returns original on failure."""
+        if not topics:
+            return topics
+        try:
+            from ollama_client import refine_topics
+            refined = refine_topics(transcript, topics)
+            if refined and isinstance(refined, list):
+                return refined
+        except Exception:
+            pass
+        return topics
 
 
 if __name__ == "__main__":

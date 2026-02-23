@@ -20,7 +20,8 @@ RUN if [ "$ENABLE_GPU" = "true" ]; then \
 # Bake base whisper model into image (avoids cold-start download)
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
 
-COPY worker.py lifecycle.py score_updater.py ./
+COPY worker.py lifecycle.py score_updater.py ollama_client.py ./
+COPY l2r/ ./l2r/
 
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "worker.py"]

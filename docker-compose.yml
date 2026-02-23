@@ -37,6 +37,8 @@ services:
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
       JWT_SECRET: ${JWT_SECRET:-supersecretkey}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
     volumes:
       - db_data:/data
     ports:
@@ -64,6 +66,8 @@ services:
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
       WHISPER_THREADS: ${WHISPER_THREADS:-4}
       CLIP_TTL_DAYS: ${CLIP_TTL_DAYS:-30}
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
     volumes:
       - db_data:/data
       - worker_tmp:/tmp/clipfeed
@@ -98,6 +102,38 @@ services:
     ports:
       - "3000:3000"
 
+  # --- Local LLM (Ollama) ---
+  ollama:
+    image: ollama/ollama:latest
+    container_name: clipfeed-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    deploy:
+      resources:
+        limits:
+          cpus: "${OLLAMA_CPUS:-4}"
+
+  # --- Content Scout Worker ---
+  scout:
+    build:
+      context: ./scout
+      dockerfile: Dockerfile
+    container_name: clipfeed-scout
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      DB_PATH: /data/clipfeed.db
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      SCOUT_INTERVAL: "${SCOUT_INTERVAL:-3600}"
+      LLM_THRESHOLD: "${LLM_THRESHOLD:-6}"
+    volumes:
+      - db_data:/data
+
   # --- Reverse Proxy ---
   nginx:
     image: nginx:alpine
@@ -116,3 +152,4 @@ volumes:
   minio_data:
   db_data:
   worker_tmp:
+  ollama_data:

@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,8 +28,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	_ "modernc.org/sqlite"
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
 )
 
 //go:embed schema.sql
@@ -39,6 +42,9 @@ type App struct {
 
 	tgMu       sync.RWMutex
 	topicGraph *TopicGraph
+
+	ltrMu    sync.RWMutex
+	ltrModel *LTRModel
 }
 
 type Config struct {
@@ -75,6 +81,7 @@ func getEnv(key, fallback string) string {
 // --- Topic Graph ---
 
 const topicDecayPerHop = 0.7
+const maxLateralHops = 2
 
 type TopicNode struct {
 	ID        string
@@ -121,13 +128,14 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 	for _, ctID := range clipTopicIDs {
 		bestBoost := 0.0
 
+		// Direct match
 		if w, ok := userAffinities[ctID]; ok {
 			bestBoost = w
 		}
 
-		// Walk ancestors: clip tagged "carbonara" matches user affinity for "cooking" with decay
 		node := g.nodes[ctID]
 		if node != nil {
+			// Walk ancestors: clip tagged "carbonara" matches user affinity for "cooking" with decay
 			hops := 0
 			current := node
 			for current.ParentID != "" {
@@ -143,17 +151,27 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 					break
 				}
 			}
+
+			// Walk descendants: user likes "cooking", clip tagged "carbonara" gets boost
+			g.walkDescendants(ctID, 1, func(childID string, depth int) {
+				if w, ok := userAffinities[childID]; ok {
+					decayed := w * math.Pow(topicDecayPerHop, float64(depth))
+					if decayed > bestBoost {
+						bestBoost = decayed
+					}
+				}
+			})
 		}
 
-		// Check lateral edges
-		for _, edge := range g.edges[ctID] {
-			if w, ok := userAffinities[edge.TargetID]; ok {
-				lateral := w * edge.Weight * topicDecayPerHop
+		// Multi-hop lateral edges
+		g.walkLaterals(ctID, maxLateralHops, func(targetID string, hops int, weight float64) {
+			if w, ok := userAffinities[targetID]; ok {
+				lateral := w * weight * math.Pow(topicDecayPerHop, float64(hops))
 				if lateral > bestBoost {
 					bestBoost = lateral
 				}
 			}
-		}
+		})
 
 		if bestBoost > 0 {
 			totalBoost += bestBoost
@@ -165,6 +183,45 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 		return 1.0
 	}
 	return totalBoost / float64(matchCount)
+}
+
+func (g *TopicGraph) walkDescendants(nodeID string, depth int, fn func(childID string, depth int)) {
+	if depth > 3 {
+		return
+	}
+	for _, childID := range g.children[nodeID] {
+		fn(childID, depth)
+		g.walkDescendants(childID, depth+1, fn)
+	}
+}
+
+func (g *TopicGraph) walkLaterals(nodeID string, maxHops int, fn func(targetID string, hops int, weight float64)) {
+	type visit struct {
+		id     string
+		hops   int
+		weight float64
+	}
+	seen := map[string]bool{nodeID: true}
+	queue := []visit{}
+	for _, edge := range g.edges[nodeID] {
+		queue = append(queue, visit{edge.TargetID, 1, edge.Weight})
+	}
+	for len(queue) > 0 {
+		v := queue[0]
+		queue = queue[1:]
+		if seen[v.id] || v.hops > maxHops {
+			continue
+		}
+		seen[v.id] = true
+		fn(v.id, v.hops, v.weight)
+		if v.hops < maxHops {
+			for _, edge := range g.edges[v.id] {
+				if !seen[edge.TargetID] {
+					queue = append(queue, visit{edge.TargetID, v.hops + 1, v.weight * edge.Weight})
+				}
+			}
+		}
+	}
 }
 
 func (a *App) getTopicGraph() *TopicGraph {
@@ -303,16 +360,73 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 		}
 	}
 
+	// Load user profile embedding for similarity blending
+	var userEmb []float32
+	if userID != "" {
+		var blob []byte
+		row := a.db.QueryRowContext(ctx, `SELECT text_embedding FROM user_embeddings WHERE user_id = ?`, userID)
+		if row.Scan(&blob) == nil {
+			userEmb = blobToFloat32(blob)
+		}
+	}
+
+	// Load clip embeddings if user embedding exists
+	clipEmbMap := make(map[string][]float32)
+	if len(userEmb) > 0 {
+		var ids []string
+		for _, c := range clips {
+			if id, ok := c["id"].(string); ok {
+				ids = append(ids, id)
+			}
+		}
+		if len(ids) > 0 {
+			ph := make([]string, len(ids))
+			args := make([]interface{}, len(ids))
+			for i, id := range ids {
+				ph[i] = "?"
+				args[i] = id
+			}
+			embRows, err := a.db.QueryContext(ctx,
+				`SELECT clip_id, text_embedding FROM clip_embeddings WHERE clip_id IN (`+strings.Join(ph, ",")+`)`, args...)
+			if err == nil {
+				for embRows.Next() {
+					var cid string
+					var blob []byte
+					embRows.Scan(&cid, &blob)
+					if v := blobToFloat32(blob); v != nil {
+						clipEmbMap[cid] = v
+					}
+				}
+				embRows.Close()
+			}
+		}
+	}
+
 	for i, clip := range clips {
 		contentScore, _ := clip["content_score"].(float64)
 		clipID, _ := clip["id"].(string)
 
-		boost := 1.0
+		graphBoost := 1.0
 		if graphTopics := clipTopicMap[clipID]; len(graphTopics) > 0 && hasGraph && len(userAffinities) > 0 {
-			boost = g.computeBoost(graphTopics, userAffinities)
+			graphBoost = g.computeBoost(graphTopics, userAffinities)
 		} else if len(topicWeights) > 0 {
 			topics, _ := clip["topics"].([]string)
-			boost = computeTopicBoost(topics, topicWeights)
+			graphBoost = computeTopicBoost(topics, topicWeights)
+		}
+
+		embSim := 0.0
+		if clipEmb, ok := clipEmbMap[clipID]; ok && len(userEmb) > 0 {
+			embSim = cosineSimilarity(userEmb, clipEmb)
+			if embSim < 0 {
+				embSim = 0
+			}
+		}
+
+		var boost float64
+		if embSim > 0 {
+			boost = graphBoost*0.6 + embSim*0.4
+		} else {
+			boost = graphBoost
 		}
 
 		clips[i]["_score"] = contentScore * boost
@@ -325,6 +439,224 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 	})
 	for _, clip := range clips {
 		delete(clip, "_score")
+	}
+}
+
+// --- Embeddings ---
+
+func blobToFloat32(b []byte) []float32 {
+	if len(b) == 0 || len(b)%4 != 0 {
+		return nil
+	}
+	n := len(b) / 4
+	out := make([]float32, n)
+	for i := 0; i < n; i++ {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4 : (i+1)*4]))
+	}
+	return out
+}
+
+func float32ToBlob(v []float32) []byte {
+	b := make([]byte, len(v)*4)
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(b[i*4:(i+1)*4], math.Float32bits(f))
+	}
+	return b
+}
+
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		ai, bi := float64(a[i]), float64(b[i])
+		dot += ai * bi
+		normA += ai * ai
+		normB += bi * bi
+	}
+	denom := math.Sqrt(normA) * math.Sqrt(normB)
+	if denom == 0 {
+		return 0
+	}
+	return dot / denom
+}
+
+func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
+	clipID := chi.URLParam(r, "id")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 10
+	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 50 {
+		limit = n
+	}
+
+	var refText, refVisual []byte
+	err := a.db.QueryRowContext(r.Context(),
+		`SELECT text_embedding, visual_embedding FROM clip_embeddings WHERE clip_id = ?`, clipID,
+	).Scan(&refText, &refVisual)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "no embeddings for this clip"})
+		return
+	}
+
+	refTextVec := blobToFloat32(refText)
+	refVisualVec := blobToFloat32(refVisual)
+	if refTextVec == nil && refVisualVec == nil {
+		writeJSON(w, 404, map[string]string{"error": "no embeddings for this clip"})
+		return
+	}
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT e.clip_id, e.text_embedding, e.visual_embedding,
+		       c.title, c.thumbnail_key, c.duration_seconds, c.content_score
+		FROM clip_embeddings e
+		JOIN clips c ON e.clip_id = c.id AND c.status = 'ready'
+		WHERE e.clip_id != ?
+	`, clipID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		return
+	}
+	defer rows.Close()
+
+	type scored struct {
+		data  map[string]interface{}
+		score float64
+	}
+	var results []scored
+
+	for rows.Next() {
+		var cid string
+		var tBlob, vBlob []byte
+		var title string
+		var thumbKey string
+		var dur, cs float64
+		rows.Scan(&cid, &tBlob, &vBlob, &title, &thumbKey, &dur, &cs)
+
+		textSim := 0.0
+		visualSim := 0.0
+		hasText := refTextVec != nil && len(tBlob) > 0
+		hasVisual := refVisualVec != nil && len(vBlob) > 0
+
+		if hasText {
+			textSim = cosineSimilarity(refTextVec, blobToFloat32(tBlob))
+		}
+		if hasVisual {
+			visualSim = cosineSimilarity(refVisualVec, blobToFloat32(vBlob))
+		}
+
+		var sim float64
+		switch {
+		case hasText && hasVisual:
+			sim = textSim*0.6 + visualSim*0.4
+		case hasText:
+			sim = textSim
+		case hasVisual:
+			sim = visualSim
+		}
+
+		results = append(results, scored{
+			data: map[string]interface{}{
+				"id": cid, "title": title, "thumbnail_key": thumbKey,
+				"duration_seconds": dur, "content_score": cs, "similarity": math.Round(sim*1000) / 1000,
+			},
+			score: sim,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
+	if len(results) > limit {
+		results = results[:limit]
+	}
+
+	clips := make([]map[string]interface{}, len(results))
+	for i, r := range results {
+		clips[i] = r.data
+	}
+	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
+}
+
+// --- Learning-to-Rank ---
+
+type LTRTree struct {
+	FeatureIndex int       `json:"feature_index"`
+	Threshold    float64   `json:"threshold"`
+	LeftChild    int       `json:"left_child"`
+	RightChild   int       `json:"right_child"`
+	LeafValue    float64   `json:"leaf_value"`
+	IsLeaf       bool      `json:"is_leaf"`
+}
+
+type LTRModel struct {
+	Trees        [][]LTRTree `json:"trees"`
+	FeatureNames []string    `json:"feature_names"`
+	NumFeatures  int         `json:"num_features"`
+}
+
+func (m *LTRModel) Score(features []float64) float64 {
+	if m == nil || len(m.Trees) == 0 {
+		return 0.5
+	}
+	sum := 0.0
+	for _, tree := range m.Trees {
+		sum += m.scoreTree(tree, features)
+	}
+	return 1.0 / (1.0 + math.Exp(-sum))
+}
+
+func (m *LTRModel) scoreTree(nodes []LTRTree, features []float64) float64 {
+	idx := 0
+	for idx < len(nodes) {
+		n := nodes[idx]
+		if n.IsLeaf {
+			return n.LeafValue
+		}
+		if n.FeatureIndex < len(features) && features[n.FeatureIndex] <= n.Threshold {
+			idx = n.LeftChild
+		} else {
+			idx = n.RightChild
+		}
+	}
+	return 0
+}
+
+func (a *App) getLTRModel() *LTRModel {
+	a.ltrMu.RLock()
+	defer a.ltrMu.RUnlock()
+	return a.ltrModel
+}
+
+func (a *App) loadLTRModel() *LTRModel {
+	modelPath := a.cfg.DBPath[:len(a.cfg.DBPath)-len("clipfeed.db")] + "l2r_model.json"
+	f, err := os.Open(modelPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil
+	}
+
+	var model LTRModel
+	if err := json.Unmarshal(data, &model); err != nil {
+		log.Printf("LTR model parse error: %v", err)
+		return nil
+	}
+	log.Printf("LTR model loaded: %d trees, %d features", len(model.Trees), model.NumFeatures)
+	return &model
+}
+
+func (a *App) ltrModelRefreshLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if m := a.loadLTRModel(); m != nil {
+			a.ltrMu.Lock()
+			a.ltrModel = m
+			a.ltrMu.Unlock()
+		}
 	}
 }
 
@@ -383,6 +715,8 @@ func main() {
 	app := &App{db: db, minio: minioClient, cfg: cfg}
 	app.refreshTopicGraph()
 	go app.topicGraphRefreshLoop()
+	app.ltrModel = app.loadLTRModel()
+	go app.ltrModelRefreshLoop()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -406,6 +740,8 @@ func main() {
 	r.Get("/api/feed", app.optionalAuth(app.handleFeed))
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
+	r.Get("/api/clips/{id}/similar", app.handleSimilarClips)
+	r.Get("/api/clips/{id}/summary", app.handleClipSummary)
 	r.Get("/api/search", app.handleSearch)
 	r.Get("/api/topics", app.handleGetTopics)
 	r.Get("/api/topics/tree", app.handleGetTopicTree)
@@ -428,6 +764,18 @@ func main() {
 		r.Get("/api/collections", app.handleListCollections)
 		r.Post("/api/collections/{id}/clips", app.handleAddToCollection)
 		r.Delete("/api/collections/{id}/clips/{clipId}", app.handleRemoveFromCollection)
+
+		// Saved filters
+		r.Post("/api/filters", app.handleCreateFilter)
+		r.Get("/api/filters", app.handleListFilters)
+		r.Put("/api/filters/{id}", app.handleUpdateFilter)
+		r.Delete("/api/filters/{id}", app.handleDeleteFilter)
+
+		// Content scout
+		r.Post("/api/scout/sources", app.handleCreateScoutSource)
+		r.Get("/api/scout/sources", app.handleListScoutSources)
+		r.Get("/api/scout/candidates", app.handleListScoutCandidates)
+		r.Post("/api/scout/candidates/{id}/approve", app.handleApproveCandidate)
 	})
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
@@ -649,6 +997,24 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(userIDKey).(string)
 	limit := 20
+
+	// Check for saved filter
+	if filterID := r.URL.Query().Get("filter"); filterID != "" && userID != "" {
+		var queryStr string
+		err := a.db.QueryRowContext(r.Context(),
+			`SELECT query FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID,
+		).Scan(&queryStr)
+		if err == nil {
+			var fq FilterQuery
+			if json.Unmarshal([]byte(queryStr), &fq) == nil {
+				clips, err := a.applyFilterToFeed(r.Context(), &fq, userID)
+				if err == nil {
+					writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips), "filter_id": filterID})
+					return
+				}
+			}
+		}
+	}
 
 	var rows *sql.Rows
 	var err error
@@ -1451,6 +1817,457 @@ func (a *App) handleRemoveFromCollection(w http.ResponseWriter, r *http.Request)
 		collectionID, clipID)
 
 	writeJSON(w, 200, map[string]string{"status": "removed"})
+}
+
+// --- Clip Summary (LLM) ---
+
+func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
+	clipID := chi.URLParam(r, "id")
+
+	var summary, model string
+	err := a.db.QueryRowContext(r.Context(),
+		`SELECT summary, model FROM clip_summaries WHERE clip_id = ?`, clipID,
+	).Scan(&summary, &model)
+	if err == nil {
+		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summary, "model": model, "cached": true})
+		return
+	}
+
+	var transcript string
+	err = a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(transcript, '') FROM clips WHERE id = ?`, clipID,
+	).Scan(&transcript)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+		return
+	}
+	if transcript == "" {
+		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "model": "", "cached": false})
+		return
+	}
+
+	ollamaURL := getEnv("OLLAMA_URL", "http://ollama:11434")
+	prompt := fmt.Sprintf("Summarize this video transcript in 1-2 sentences:\n\n%s", transcript)
+	if len(prompt) > 4000 {
+		prompt = prompt[:4000]
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model": getEnv("OLLAMA_MODEL", "llama3.2:3b"), "prompt": prompt, "stream": false,
+	})
+
+	resp, err := http.Post(ollamaURL+"/api/generate", "application/json",
+		strings.NewReader(string(reqBody)))
+	if err != nil {
+		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Response string `json:"response"`
+	}
+	json.Unmarshal(body, &result)
+
+	if result.Response != "" {
+		modelName := getEnv("OLLAMA_MODEL", "llama3.2:3b")
+		a.db.ExecContext(r.Context(),
+			`INSERT OR REPLACE INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)`,
+			clipID, result.Response, modelName)
+	}
+
+	writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": result.Response, "cached": false})
+}
+
+// --- Saved Filters ---
+
+type FilterQuery struct {
+	Topics       *FilterTopics  `json:"topics,omitempty"`
+	Channels     []string       `json:"channels,omitempty"`
+	Duration     *FilterRange   `json:"duration,omitempty"`
+	RecencyDays  int            `json:"recency_days,omitempty"`
+	MinScore     float64        `json:"min_score,omitempty"`
+	SimilarToClip string        `json:"similar_to_clip,omitempty"`
+}
+
+type FilterTopics struct {
+	Include []string `json:"include"`
+	Exclude []string `json:"exclude"`
+	Mode    string   `json:"mode"`
+}
+
+type FilterRange struct {
+	Min float64 `json:"min"`
+	Max float64 `json:"max"`
+}
+
+func (a *App) handleCreateFilter(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	var req struct {
+		Name      string          `json:"name"`
+		Query     json.RawMessage `json:"query"`
+		IsDefault bool            `json:"is_default"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		writeJSON(w, 400, map[string]string{"error": "name and query required"})
+		return
+	}
+
+	var fq FilterQuery
+	if err := json.Unmarshal(req.Query, &fq); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid filter query"})
+		return
+	}
+
+	id := uuid.New().String()
+	isDefault := 0
+	if req.IsDefault {
+		isDefault = 1
+	}
+
+	_, err := a.db.ExecContext(r.Context(),
+		`INSERT INTO saved_filters (id, user_id, name, query, is_default) VALUES (?, ?, ?, ?, ?)`,
+		id, userID, req.Name, string(req.Query), isDefault)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to create filter"})
+		return
+	}
+	writeJSON(w, 201, map[string]interface{}{"id": id, "name": req.Name})
+}
+
+func (a *App) handleListFilters(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	rows, err := a.db.QueryContext(r.Context(),
+		`SELECT id, name, query, is_default, created_at FROM saved_filters WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to list filters"})
+		return
+	}
+	defer rows.Close()
+
+	var filters []map[string]interface{}
+	for rows.Next() {
+		var id, name, queryStr, createdAt string
+		var isDefault int
+		rows.Scan(&id, &name, &queryStr, &isDefault, &createdAt)
+		filters = append(filters, map[string]interface{}{
+			"id": id, "name": name, "query": json.RawMessage(queryStr),
+			"is_default": isDefault == 1, "created_at": createdAt,
+		})
+	}
+	writeJSON(w, 200, map[string]interface{}{"filters": filters})
+}
+
+func (a *App) handleUpdateFilter(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	filterID := chi.URLParam(r, "id")
+	var req struct {
+		Name      string          `json:"name"`
+		Query     json.RawMessage `json:"query"`
+		IsDefault *bool           `json:"is_default"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if req.Name != "" {
+		a.db.ExecContext(r.Context(), `UPDATE saved_filters SET name = ? WHERE id = ? AND user_id = ?`, req.Name, filterID, userID)
+	}
+	if req.Query != nil {
+		a.db.ExecContext(r.Context(), `UPDATE saved_filters SET query = ? WHERE id = ? AND user_id = ?`, string(req.Query), filterID, userID)
+	}
+	if req.IsDefault != nil {
+		def := 0
+		if *req.IsDefault {
+			def = 1
+		}
+		a.db.ExecContext(r.Context(), `UPDATE saved_filters SET is_default = ? WHERE id = ? AND user_id = ?`, def, filterID, userID)
+	}
+	writeJSON(w, 200, map[string]string{"status": "updated"})
+}
+
+func (a *App) handleDeleteFilter(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	filterID := chi.URLParam(r, "id")
+	a.db.ExecContext(r.Context(), `DELETE FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID)
+	writeJSON(w, 200, map[string]string{"status": "deleted"})
+}
+
+func (a *App) expandTopicDescendants(topicNames []string) []string {
+	g := a.getTopicGraph()
+	if g == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var ids []string
+	for _, name := range topicNames {
+		node := g.resolveByName(name)
+		if node == nil {
+			continue
+		}
+		var walk func(id string)
+		walk = func(id string) {
+			if seen[id] {
+				return
+			}
+			seen[id] = true
+			ids = append(ids, id)
+			for _, child := range g.children[id] {
+				walk(child)
+			}
+		}
+		walk(node.ID)
+	}
+	return ids
+}
+
+func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID string) ([]map[string]interface{}, error) {
+	where := []string{"c.status = 'ready'"}
+	var args []interface{}
+
+	if fq.Duration != nil {
+		if fq.Duration.Min > 0 {
+			where = append(where, "c.duration_seconds >= ?")
+			args = append(args, fq.Duration.Min)
+		}
+		if fq.Duration.Max > 0 {
+			where = append(where, "c.duration_seconds <= ?")
+			args = append(args, fq.Duration.Max)
+		}
+	}
+	if fq.RecencyDays > 0 {
+		where = append(where, fmt.Sprintf("c.created_at > datetime('now', '-%d days')", fq.RecencyDays))
+	}
+	if fq.MinScore > 0 {
+		where = append(where, "c.content_score >= ?")
+		args = append(args, fq.MinScore)
+	}
+	if len(fq.Channels) > 0 {
+		ph := make([]string, len(fq.Channels))
+		for i, ch := range fq.Channels {
+			ph[i] = "?"
+			args = append(args, ch)
+		}
+		where = append(where, "s.channel_name IN ("+strings.Join(ph, ",")+")")
+	}
+
+	// Topic inclusion via graph descendants
+	if fq.Topics != nil && len(fq.Topics.Include) > 0 {
+		var topicIDs []string
+		if fq.Topics.Mode == "descendants" {
+			topicIDs = a.expandTopicDescendants(fq.Topics.Include)
+		} else {
+			g := a.getTopicGraph()
+			if g != nil {
+				for _, name := range fq.Topics.Include {
+					if n := g.resolveByName(name); n != nil {
+						topicIDs = append(topicIDs, n.ID)
+					}
+				}
+			}
+		}
+		if len(topicIDs) > 0 {
+			ph := make([]string, len(topicIDs))
+			for i, id := range topicIDs {
+				ph[i] = "?"
+				args = append(args, id)
+			}
+			where = append(where, "c.id IN (SELECT clip_id FROM clip_topics WHERE topic_id IN ("+strings.Join(ph, ",")+"))")
+		}
+	}
+
+	// Topic exclusion
+	if fq.Topics != nil && len(fq.Topics.Exclude) > 0 {
+		var excludeIDs []string
+		if fq.Topics.Mode == "descendants" {
+			excludeIDs = a.expandTopicDescendants(fq.Topics.Exclude)
+		} else {
+			g := a.getTopicGraph()
+			if g != nil {
+				for _, name := range fq.Topics.Exclude {
+					if n := g.resolveByName(name); n != nil {
+						excludeIDs = append(excludeIDs, n.ID)
+					}
+				}
+			}
+		}
+		if len(excludeIDs) > 0 {
+			ph := make([]string, len(excludeIDs))
+			for i, id := range excludeIDs {
+				ph[i] = "?"
+				args = append(args, id)
+			}
+			where = append(where, "c.id NOT IN (SELECT clip_id FROM clip_topics WHERE topic_id IN ("+strings.Join(ph, ",")+"))")
+		}
+	}
+
+	// Exclude seen
+	if userID != "" {
+		where = append(where, "c.id NOT IN (SELECT clip_id FROM interactions WHERE user_id = ? AND created_at > datetime('now', '-24 hours'))")
+		args = append(args, userID)
+	}
+
+	query := `SELECT c.id, c.title, c.description, c.duration_seconds,
+	       c.thumbnail_key, c.topics, c.tags, c.content_score,
+	       c.created_at, s.channel_name, s.platform, s.url
+	FROM clips c LEFT JOIN sources s ON c.source_id = s.id
+	WHERE ` + strings.Join(where, " AND ") + `
+	ORDER BY c.content_score DESC LIMIT 20`
+
+	args = append(args)
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanClips(rows), nil
+}
+
+// --- Content Scout ---
+
+func (a *App) handleCreateScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	var req struct {
+		SourceType string `json:"source_type"`
+		Platform   string `json:"platform"`
+		Identifier string `json:"identifier"`
+		Interval   int    `json:"check_interval_hours"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if req.SourceType == "" || req.Platform == "" || req.Identifier == "" {
+		writeJSON(w, 400, map[string]string{"error": "source_type, platform, identifier required"})
+		return
+	}
+	interval := req.Interval
+	if interval <= 0 {
+		interval = 24
+	}
+
+	id := uuid.New().String()
+	_, err := a.db.ExecContext(r.Context(),
+		`INSERT INTO scout_sources (id, user_id, source_type, platform, identifier, check_interval_hours)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		id, userID, req.SourceType, req.Platform, req.Identifier, interval)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			writeJSON(w, 409, map[string]string{"error": "source already exists"})
+			return
+		}
+		writeJSON(w, 500, map[string]string{"error": "failed to create scout source"})
+		return
+	}
+	writeJSON(w, 201, map[string]interface{}{"id": id})
+}
+
+func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	rows, err := a.db.QueryContext(r.Context(),
+		`SELECT id, source_type, platform, identifier, is_active, last_checked, check_interval_hours, created_at
+		 FROM scout_sources WHERE user_id = ? ORDER BY created_at DESC`, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		return
+	}
+	defer rows.Close()
+
+	var sources []map[string]interface{}
+	for rows.Next() {
+		var id, srcType, platform, identifier, createdAt string
+		var isActive, interval int
+		var lastChecked *string
+		rows.Scan(&id, &srcType, &platform, &identifier, &isActive, &lastChecked, &interval, &createdAt)
+		sources = append(sources, map[string]interface{}{
+			"id": id, "source_type": srcType, "platform": platform,
+			"identifier": identifier, "is_active": isActive == 1,
+			"last_checked": lastChecked, "check_interval_hours": interval,
+			"created_at": createdAt,
+		})
+	}
+	writeJSON(w, 200, map[string]interface{}{"sources": sources})
+}
+
+func (a *App) handleListScoutCandidates(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	statusFilter := r.URL.Query().Get("status")
+	if statusFilter == "" {
+		statusFilter = "pending"
+	}
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		SELECT sc.id, sc.url, sc.platform, sc.external_id, sc.title,
+		       sc.channel_name, sc.duration_seconds, sc.llm_score, sc.status, sc.created_at
+		FROM scout_candidates sc
+		JOIN scout_sources ss ON sc.scout_source_id = ss.id
+		WHERE ss.user_id = ? AND sc.status = ?
+		ORDER BY sc.created_at DESC LIMIT 50
+	`, userID, statusFilter)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		return
+	}
+	defer rows.Close()
+
+	var candidates []map[string]interface{}
+	for rows.Next() {
+		var id, urlStr, platform, extID, status, createdAt string
+		var title, channelName *string
+		var duration, llmScore *float64
+		rows.Scan(&id, &urlStr, &platform, &extID, &title, &channelName, &duration, &llmScore, &status, &createdAt)
+		candidates = append(candidates, map[string]interface{}{
+			"id": id, "url": urlStr, "platform": platform, "external_id": extID,
+			"title": title, "channel_name": channelName,
+			"duration_seconds": duration, "llm_score": llmScore,
+			"status": status, "created_at": createdAt,
+		})
+	}
+	writeJSON(w, 200, map[string]interface{}{"candidates": candidates})
+}
+
+func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	candidateID := chi.URLParam(r, "id")
+
+	var urlStr, platform string
+	err := a.db.QueryRowContext(r.Context(), `
+		SELECT sc.url, sc.platform FROM scout_candidates sc
+		JOIN scout_sources ss ON sc.scout_source_id = ss.id
+		WHERE sc.id = ? AND ss.user_id = ? AND sc.status = 'pending'
+	`, candidateID, userID).Scan(&urlStr, &platform)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "candidate not found or already processed"})
+		return
+	}
+
+	sourceID := uuid.New().String()
+	jobID := uuid.New().String()
+	payload := fmt.Sprintf(`{"url":%q,"source_id":%q,"platform":%q}`, urlStr, sourceID, platform)
+
+	conn, err := a.db.Conn(r.Context())
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "db error"})
+		return
+	}
+	defer conn.Close()
+
+	conn.ExecContext(r.Context(), "BEGIN IMMEDIATE")
+	conn.ExecContext(r.Context(),
+		`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
+		sourceID, urlStr, platform, userID)
+	conn.ExecContext(r.Context(),
+		`INSERT INTO jobs (id, source_id, job_type, payload) VALUES (?, ?, 'download', ?)`,
+		jobID, sourceID, payload)
+	conn.ExecContext(r.Context(),
+		`UPDATE scout_candidates SET status = 'ingested' WHERE id = ?`, candidateID)
+	conn.ExecContext(r.Context(), "COMMIT")
+
+	writeJSON(w, 200, map[string]interface{}{
+		"status": "approved", "source_id": sourceID, "job_id": jobID,
+	})
 }
 
 // --- Helpers ---
