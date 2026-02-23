@@ -102,6 +102,7 @@ func main() {
 	// Column migrations for existing databases (ALTER TABLE is not idempotent in SQLite).
 	for _, m := range []string{
 		"ALTER TABLE user_preferences ADD COLUMN scout_threshold REAL DEFAULT 6.0",
+		"ALTER TABLE user_preferences ADD COLUMN dedupe_seen_24h INTEGER DEFAULT 1",
 		"ALTER TABLE scout_sources ADD COLUMN force_check INTEGER DEFAULT 0",
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {

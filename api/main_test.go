@@ -482,6 +482,47 @@ func TestHandleFeed_Authenticated(t *testing.T) {
 	}
 }
 
+func TestHandleFeed_DedupeSeenToggle(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "dedupeuser", "password123")
+
+	var userID string
+	if err := app.db.QueryRow(`SELECT id FROM users WHERE username = 'dedupeuser'`).Scan(&userID); err != nil {
+		t.Fatalf("fetch user id: %v", err)
+	}
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('src-dedupe', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, title, duration_seconds, storage_key, status, content_score) VALUES ('c-dedupe', 'src-dedupe', 'Seen Clip', 30.0, 'k', 'ready', 0.8)`)
+	app.db.Exec(`INSERT INTO interactions (id, user_id, clip_id, action, created_at) VALUES ('i-dedupe', ?, 'c-dedupe', 'view', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`, userID)
+
+	// Default behavior: dedupe ON, seen clip should be filtered out.
+	req := authRequest(t, app, "GET", "/api/feed", nil, token)
+	rec := httptest.NewRecorder()
+	app.optionalAuth(app.handleFeed)(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	clips := resp["clips"].([]interface{})
+	if len(clips) != 0 {
+		t.Fatalf("got %d clips, want 0 with dedupe_seen_24h enabled", len(clips))
+	}
+
+	// Toggle dedupe OFF: seen clip should be returned.
+	app.db.Exec(`UPDATE user_preferences SET dedupe_seen_24h = 0 WHERE user_id = ?`, userID)
+	req = authRequest(t, app, "GET", "/api/feed", nil, token)
+	rec = httptest.NewRecorder()
+	app.optionalAuth(app.handleFeed)(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp = decodeJSON(t, rec)
+	clips = resp["clips"].([]interface{})
+	if len(clips) != 1 {
+		t.Fatalf("got %d clips, want 1 with dedupe_seen_24h disabled", len(clips))
+	}
+}
+
 func TestHandleFeed_FiltersProcessingClips(t *testing.T) {
 	app := newTestApp(t)
 

@@ -124,7 +124,7 @@ func (a *App) handleDeleteFilter(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
-func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID string) ([]map[string]interface{}, error) {
+func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID string, dedupeSeen24h bool) ([]map[string]interface{}, error) {
 	where := []string{"c.status = 'ready'"}
 	var args []interface{}
 
@@ -205,7 +205,7 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	}
 
 	// Exclude seen
-	if userID != "" {
+	if userID != "" && dedupeSeen24h {
 		where = append(where, "c.id NOT IN (SELECT clip_id FROM interactions WHERE user_id = ? AND created_at > datetime('now', '-24 hours'))")
 		args = append(args, userID)
 	}
