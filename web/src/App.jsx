@@ -410,6 +410,88 @@ function IngestModal({ onClose }) {
 }
 
 // --- Jobs Screen ---
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function formatDuration(startStr, endStr) {
+  if (!startStr) return null;
+  const end = endStr ? new Date(endStr) : new Date();
+  const seconds = Math.floor((end - new Date(startStr)) / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${minutes}m ${secs}s`;
+}
+
+function displayUrl(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const path = u.pathname.length > 30 ? u.pathname.slice(0, 30) + '…' : u.pathname;
+    return u.hostname.replace('www.', '') + path;
+  } catch { return url.length > 50 ? url.slice(0, 50) + '…' : url; }
+}
+
+function summarizeError(error) {
+  if (!error) return null;
+  if (error.includes('403: Forbidden')) return 'Access denied (403) — video may be private or region-locked';
+  if (error.includes('404')) return 'Video not found (404) — link may be broken or removed';
+  if (error.includes('429')) return 'Rate limited — too many requests, will retry';
+  if (error.includes('nsig extraction failed')) return 'Download blocked — platform changed its protection';
+  if (error.includes('Unsupported URL')) return 'URL not supported — try a different link';
+  if (error.includes('Video unavailable')) return 'Video unavailable — may be deleted or private';
+  const firstLine = error.split('\n').pop().trim();
+  return firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine;
+}
+
+const STATUS_LABELS = { queued: 'Queued', running: 'Processing', complete: 'Done', failed: 'Failed' };
+
+function JobCard({ job }) {
+  const [expanded, setExpanded] = useState(false);
+  const errorSummary = summarizeError(job.error);
+  const elapsed = formatDuration(job.started_at, job.completed_at);
+
+  return (
+    <div className={`job-card ${job.status === 'failed' ? 'job-card-failed' : ''}`} onClick={() => job.error && setExpanded(!expanded)}>
+      <div className="job-card-header">
+        <div className={`job-status ${job.status}`} />
+        <div className="job-info">
+          <div className="job-title-row">
+            <span className="job-type">{job.title || displayUrl(job.url) || job.job_type}</span>
+            {job.platform && <span className="job-platform">{job.platform}</span>}
+          </div>
+          <div className="job-meta">
+            <span className={`job-status-label ${job.status}`}>{STATUS_LABELS[job.status] || job.status}</span>
+            <span className="job-meta-sep" />
+            <span>{timeAgo(job.created_at)}</span>
+            {elapsed && <><span className="job-meta-sep" /><span>{elapsed}</span></>}
+            {job.status === 'failed' && job.attempts > 0 && (
+              <><span className="job-meta-sep" /><span>attempt {job.attempts}/{job.max_attempts}</span></>
+            )}
+          </div>
+        </div>
+      </div>
+      {errorSummary && (
+        <div className={`job-error ${expanded ? 'job-error-expanded' : ''}`}>
+          <div className="job-error-summary">{errorSummary}</div>
+          {expanded && job.error !== errorSummary && (
+            <pre className="job-error-detail">{job.error}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function JobsScreen() {
   const [jobs, setJobs] = useState([]);
 
@@ -429,15 +511,7 @@ function JobsScreen() {
           No jobs yet. Submit a video URL to get started.
         </div>
       )}
-      {jobs.map((job) => (
-        <div key={job.id} className="job-card">
-          <div className={`job-status ${job.status}`} />
-          <div className="job-info">
-            <div className="job-type">{job.job_type}</div>
-            <div className="job-time">{job.status} - {new Date(job.created_at).toLocaleString()}</div>
-          </div>
-        </div>
-      ))}
+      {jobs.map((job) => <JobCard key={job.id} job={job} />)}
     </div>
   );
 }

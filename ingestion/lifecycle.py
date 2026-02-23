@@ -102,6 +102,7 @@ def main():
             AND created_at < datetime('now', '-7 days')
     """)
 
+    db.commit()
     db.close()
     log.info("Lifecycle cleanup complete")
 

@@ -615,8 +615,12 @@ func detectPlatform(url string) string {
 
 func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.QueryContext(r.Context(), `
-		SELECT id, source_id, job_type, status, created_at, completed_at
-		FROM jobs ORDER BY created_at DESC LIMIT 50
+		SELECT j.id, j.source_id, j.job_type, j.status, j.error,
+		       j.attempts, j.max_attempts, j.started_at, j.completed_at, j.created_at,
+		       s.url, s.platform, s.title
+		FROM jobs j
+		LEFT JOIN sources s ON j.source_id = s.id
+		ORDER BY j.created_at DESC LIMIT 50
 	`)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to list jobs"})
@@ -627,12 +631,19 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	var jobs []map[string]interface{}
 	for rows.Next() {
 		var id, jobType, status, createdAt string
-		var sourceID, completedAt *string
-		rows.Scan(&id, &sourceID, &jobType, &status, &createdAt, &completedAt)
-		jobs = append(jobs, map[string]interface{}{
+		var sourceID, errMsg, startedAt, completedAt, url, platform, title *string
+		var attempts, maxAttempts int
+		rows.Scan(&id, &sourceID, &jobType, &status, &errMsg,
+			&attempts, &maxAttempts, &startedAt, &completedAt, &createdAt,
+			&url, &platform, &title)
+		job := map[string]interface{}{
 			"id": id, "source_id": sourceID, "job_type": jobType,
-			"status": status, "created_at": createdAt, "completed_at": completedAt,
-		})
+			"status": status, "error": errMsg,
+			"attempts": attempts, "max_attempts": maxAttempts,
+			"started_at": startedAt, "completed_at": completedAt, "created_at": createdAt,
+			"url": url, "platform": platform, "title": title,
+		}
+		jobs = append(jobs, job)
 	}
 	writeJSON(w, 200, map[string]interface{}{"jobs": jobs})
 }
