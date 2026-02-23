@@ -836,7 +836,7 @@ type CookieRequest struct {
 }
 
 var validPlatforms = map[string]bool{
-	"tiktok": true, "instagram": true, "twitter": true,
+	"youtube": true, "tiktok": true, "instagram": true, "twitter": true,
 }
 
 func (a *App) handleSetCookie(w http.ResponseWriter, r *http.Request) {
