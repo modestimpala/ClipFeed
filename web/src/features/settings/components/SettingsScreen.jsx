@@ -12,6 +12,7 @@ export function SettingsScreen({ onLogout }) {
 
   const [prefs, setPrefs] = useState({
     exploration_rate: 0.3,
+    dedupe_seen_24h: true,
     min_clip_seconds: 5,
     max_clip_seconds: 120,
     autoplay: true,
@@ -99,6 +100,24 @@ export function SettingsScreen({ onLogout }) {
             value={prefs.max_clip_seconds}
             onChange={(e) => handleChange('max_clip_seconds', parseInt(e.target.value, 10))}
           />
+        </div>
+
+        <div className="setting-row">
+          <span className="setting-label">Hide clips seen in last 24h</span>
+          <button
+            style={{
+              background: prefs.dedupe_seen_24h ? 'var(--accent)' : 'var(--bg-surface)',
+              border: 'none', borderRadius: 12, width: 44, height: 24, cursor: 'pointer',
+              position: 'relative', transition: 'background 0.2s',
+            }}
+            onClick={() => handleChange('dedupe_seen_24h', !prefs.dedupe_seen_24h)}
+          >
+            <div style={{
+              width: 18, height: 18, borderRadius: '50%', background: 'white',
+              position: 'absolute', top: 3,
+              left: prefs.dedupe_seen_24h ? 23 : 3, transition: 'left 0.2s',
+            }} />
+          </button>
         </div>
       </div>
 

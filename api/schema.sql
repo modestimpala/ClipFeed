@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     user_id             TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     exploration_rate    REAL DEFAULT 0.3,
     topic_weights       TEXT DEFAULT '{}',
+    dedupe_seen_24h     INTEGER DEFAULT 1,
     min_clip_seconds    INTEGER DEFAULT 5,
     max_clip_seconds    INTEGER DEFAULT 120,
     autoplay            INTEGER DEFAULT 1,
