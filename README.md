@@ -22,12 +22,14 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
                     | (WAL)|  | FTS5  |  | :9000 |
                     +--------+ +---+---+ +-------+
                                    |
-                            +------+-------+
-                            |   Worker     |
-                            | yt-dlp       |
-                            | ffmpeg       |
-                            | whisper      |
-                            +--------------+
+              +--------------------+--------------------+
+              |                    |                    |
+       +------+-------+     +------+-------+     +------+-------+
+       |   Worker     |     |   Scout      |     |   Ollama     |
+       | yt-dlp       |     | Python       |     | Local LLM    |
+       | ffmpeg       |     +--------------+     +--------------+
+       | whisper      |
+       +--------------+
 ```
 
 ## Stack
@@ -36,8 +38,10 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 |-----------|------|---------|
 | API | Go + Chi | REST API, auth, feed algorithm |
 | Frontend | React + Vite PWA | Mobile-first swipe feed |
-| Worker | Python | Video download, split, transcode, transcribe |
-| Database | SQLite | Users, clips, interactions, algorithm state, job queue |
+| Worker | Python | Video download, split, transcode, transcribe, score update |
+| Scout | Python | Local LLM-backed content scouting and discovery |
+| LLM | Ollama | Local model inference (embeddings, topic extraction) |
+| Database | SQLite | Users, clips, interactions, algorithm state, job queue, topic graph |
 | Storage | MinIO | S3-compatible object storage for video files |
 | Search | SQLite FTS5 | Full-text search across clips and transcripts |
 | Proxy | nginx | Reverse proxy, streaming optimization |
@@ -56,16 +60,24 @@ docker compose up -d
 docker compose logs -f worker
 ```
 
+**GPU Acceleration (Optional):**
+If you have a compatible GPU, you can use the GPU-optimized compose file to accelerate transcription, transcoding, and local LLM inference:
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+```
+
 The app will be available at `http://localhost`.
 
 ## Content Pipeline
 
-1. User submits a video URL (YouTube, Vimeo, TikTok, Instagram, etc.)
-2. Worker downloads via yt-dlp
-3. ffmpeg detects scene changes and splits into 15-90s clips
-4. Each clip is transcoded to mobile-optimized mp4
-5. Whisper transcribes audio for search and topic extraction
-6. Clips are uploaded to MinIO and made available in the feed
+1. **Scouting:** The Scout worker uses Ollama to proactively discover and evaluate potential new content based on user interests.
+2. **Ingestion:** User or Scout submits a video URL (YouTube, Vimeo, TikTok, Instagram, etc.).
+3. **Processing:** Worker downloads via yt-dlp.
+4. **Segmentation:** ffmpeg detects scene changes and splits into 15-90s clips.
+5. **Transcoding:** Each clip is transcoded to mobile-optimized mp4.
+6. **Transcription:** Whisper transcribes audio for search and topic extraction.
+7. **Embeddings & Topics:** Content is embedded and assigned to the topic graph.
+8. **Storage:** Clips are uploaded to MinIO and made available in the feed.
 
 ## Algorithm
 
@@ -73,9 +85,11 @@ The feed algorithm is fully transparent and user-controllable:
 
 - **Exploration Rate** (0-100%): Controls the balance between showing content similar to what you've liked vs discovering new topics. At 0% you get a pure comfort zone feed, at 100% everything is random discovery.
 - **Clip Duration Bounds**: Set minimum and maximum clip lengths you want to see.
-- **Topic Weights**: (Phase 2) Explicit per-topic interest sliders.
+- **Topic Weights**: Explicit per-topic interest sliders allowing you to boost or hide specific topics.
 
 The algorithm combines:
+- Embedding-driven ranking (L2R - Learning to Rank)
+- Topic Graph for semantic discovery and backfilling
 - Content score (predicted engagement based on aggregate interactions)
 - User preference matching (topics, duration, source)
 - Controlled randomness (scaled by exploration rate)
@@ -114,6 +128,7 @@ No app store needed. For actual native builds later, Capacitor can wrap the same
 - `GET /api/feed` - Get personalized feed (or anonymous)
 - `GET /api/clips/:id` - Get clip details
 - `GET /api/clips/:id/stream` - Get streaming URL
+- `GET /api/topics` - Get top topics
 
 ### Interactions
 - `POST /api/clips/:id/interact` - Record interaction (view, like, skip, etc.)
@@ -126,7 +141,7 @@ No app store needed. For actual native builds later, Capacitor can wrap the same
 - `GET /api/jobs/:id` - Get job details
 
 ### User
-- `GET /api/me` - Get profile
+- `GET /api/me` - Get profile (includes preferences and topic weights)
 - `PUT /api/me/preferences` - Update algorithm preferences
 - `GET /api/me/saved` - List saved clips
 - `GET /api/me/history` - View watch history
@@ -152,7 +167,7 @@ cd web && npm install && npm run dev
 
 ## Roadmap
 
-- [ ] Phase 1: Core pipeline (this) - ingest, split, serve, basic feed
-- [ ] Phase 2: Algorithm engine - topic extraction, collaborative filtering, preference UI
+- [x] Phase 1: Core pipeline - ingest, split, serve, basic feed
+- [x] Phase 2: Algorithm engine - topic extraction, collaborative filtering, preference UI, L2R embeddings
 - [ ] Phase 3: Polish - HLS adaptive streaming, search, refined UI
 - [ ] Phase 4: Multi-source (Reels/TikTok via cookies), federation

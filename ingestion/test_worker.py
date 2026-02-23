@@ -6,6 +6,7 @@ from unittest.mock import patch, MagicMock
 
 # Mock heavy third-party dependencies before importing worker so the module
 # loads without needing minio, faster_whisper, or keybert installed.
+sys.modules.setdefault("numpy", MagicMock())
 sys.modules.setdefault("minio", MagicMock())
 sys.modules.setdefault("faster_whisper", MagicMock())
 sys.modules.setdefault("keybert", MagicMock())
