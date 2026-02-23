@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/binary"
 	"encoding/json"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,26 +36,38 @@ type LTRModel struct {
 }
 
 func (m *LTRModel) Score(features []float64) float64 {
-	if m == nil || len(m.Trees) == 0 {
-		return 0.5
+	if m == nil || len(m.Trees) == 0 || len(features) == 0 {
+		return 0
 	}
 	sum := 0.0
 	for _, tree := range m.Trees {
 		sum += m.scoreTree(tree, features)
 	}
-	return 1.0 / (1.0 + math.Exp(-sum))
+	return sum
 }
 
 func (m *LTRModel) scoreTree(nodes []LTRTree, features []float64) float64 {
+	if len(nodes) == 0 {
+		return 0
+	}
 	idx := 0
 	for idx < len(nodes) {
 		n := nodes[idx]
 		if n.IsLeaf {
 			return n.LeafValue
 		}
-		if n.FeatureIndex < len(features) && features[n.FeatureIndex] <= n.Threshold {
+		if n.FeatureIndex < 0 || n.FeatureIndex >= len(features) {
+			return 0
+		}
+		if features[n.FeatureIndex] <= n.Threshold {
+			if n.LeftChild < 0 || n.LeftChild >= len(nodes) {
+				return 0
+			}
 			idx = n.LeftChild
 		} else {
+			if n.RightChild < 0 || n.RightChild >= len(nodes) {
+				return 0
+			}
 			idx = n.RightChild
 		}
 	}
@@ -66,7 +81,10 @@ func (a *App) getLTRModel() *LTRModel {
 }
 
 func (a *App) loadLTRModel() *LTRModel {
-	modelPath := a.cfg.DBPath[:len(a.cfg.DBPath)-len("clipfeed.db")] + "l2r_model.json"
+	modelPath := a.cfg.L2RModelPath
+	if modelPath == "" {
+		modelPath = "/data/l2r_model.json"
+	}
 	f, err := os.Open(modelPath)
 	if err != nil {
 		return nil
@@ -85,6 +103,236 @@ func (a *App) loadLTRModel() *LTRModel {
 	}
 	log.Printf("LTR model loaded: %d trees, %d features", len(model.Trees), model.NumFeatures)
 	return &model
+}
+
+var ltrFeatureNames = []string{
+	"content_score",
+	"duration_seconds",
+	"topic_count",
+	"transcript_length",
+	"age_hours",
+	"file_size_bytes",
+	"topic_overlap",
+	"channel_affinity",
+	"user_total_views",
+	"user_avg_watch_percentage",
+	"user_like_rate",
+	"user_save_rate",
+	"hours_since_last_session",
+}
+
+type ltrUserStats struct {
+	TotalViews            float64
+	AvgWatchPercentage    float64
+	LikeRate              float64
+	SaveRate              float64
+	HoursSinceLastSession float64
+	ChannelAffinity       map[string]float64
+	TopicAffinities       map[string]struct{}
+}
+
+func (a *App) rankFeed(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64) {
+	if len(clips) == 0 {
+		return
+	}
+
+	if model := a.getLTRModel(); model != nil && len(model.Trees) > 0 {
+		a.applyLTRRanking(ctx, clips, userID, model)
+	} else {
+		a.applyTopicBoost(ctx, clips, userID, topicWeights)
+	}
+
+	for _, clip := range clips {
+		delete(clip, "_source_id")
+		delete(clip, "_transcript_length")
+		delete(clip, "_file_size_bytes")
+		delete(clip, "_age_hours")
+		delete(clip, "_l2r_score")
+	}
+}
+
+func (a *App) applyLTRRanking(ctx context.Context, clips []map[string]interface{}, userID string, model *LTRModel) {
+	if model == nil || len(clips) == 0 {
+		return
+	}
+
+	featureCount := len(ltrFeatureNames)
+	if model.NumFeatures > 0 {
+		featureCount = model.NumFeatures
+	}
+	if featureCount <= 0 {
+		return
+	}
+
+	stats := a.loadLTRUserStats(ctx, userID)
+	clipIDs := make([]string, 0, len(clips))
+	sourceIDs := make(map[string]string, len(clips))
+	for _, clip := range clips {
+		clipID, _ := clip["id"].(string)
+		if clipID == "" {
+			continue
+		}
+		clipIDs = append(clipIDs, clipID)
+		sourceID, _ := clip["_source_id"].(string)
+		sourceIDs[clipID] = sourceID
+	}
+
+	topicCount, topicOverlap := a.loadClipTopicStats(ctx, clipIDs, stats.TopicAffinities)
+
+	for i := range clips {
+		clip := clips[i]
+		clipID, _ := clip["id"].(string)
+		features := make([]float64, featureCount)
+		set := func(idx int, v float64) {
+			if idx >= 0 && idx < len(features) {
+				features[idx] = v
+			}
+		}
+
+		contentScore, _ := clip["content_score"].(float64)
+		durationSeconds, _ := clip["duration_seconds"].(float64)
+		transcriptLength, _ := clip["_transcript_length"].(float64)
+		ageHours, _ := clip["_age_hours"].(float64)
+		fileSizeBytes, _ := clip["_file_size_bytes"].(float64)
+
+		set(0, contentScore)
+		set(1, durationSeconds)
+		set(2, float64(topicCount[clipID]))
+		set(3, transcriptLength)
+		set(4, ageHours)
+		set(5, fileSizeBytes)
+		set(6, float64(topicOverlap[clipID]))
+
+		if sourceID, ok := sourceIDs[clipID]; ok {
+			set(7, stats.ChannelAffinity[sourceID])
+		}
+
+		set(8, stats.TotalViews)
+		set(9, stats.AvgWatchPercentage)
+		set(10, stats.LikeRate)
+		set(11, stats.SaveRate)
+		set(12, stats.HoursSinceLastSession)
+
+		clip["_l2r_score"] = model.Score(features)
+	}
+
+	sort.SliceStable(clips, func(i, j int) bool {
+		si, _ := clips[i]["_l2r_score"].(float64)
+		sj, _ := clips[j]["_l2r_score"].(float64)
+		if si == sj {
+			ci, _ := clips[i]["content_score"].(float64)
+			cj, _ := clips[j]["content_score"].(float64)
+			return ci > cj
+		}
+		return si > sj
+	})
+}
+
+func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats {
+	stats := ltrUserStats{
+		HoursSinceLastSession: 24.0 * 7,
+		ChannelAffinity:       map[string]float64{},
+		TopicAffinities:       map[string]struct{}{},
+	}
+	if userID == "" {
+		return stats
+	}
+
+	var totalViews int
+	var avgWatch float64
+	var likeCount, saveCount int
+	_ = a.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*),
+			COALESCE(AVG(COALESCE(watch_percentage, 0)), 0),
+			COALESCE(SUM(CASE WHEN action IN ('like','watch_full','share') THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN action = 'save' THEN 1 ELSE 0 END), 0)
+		FROM interactions
+		WHERE user_id = ?
+	`, userID).Scan(&totalViews, &avgWatch, &likeCount, &saveCount)
+
+	stats.TotalViews = float64(totalViews)
+	stats.AvgWatchPercentage = avgWatch
+	if totalViews > 0 {
+		stats.LikeRate = float64(likeCount) / float64(totalViews)
+		stats.SaveRate = float64(saveCount) / float64(totalViews)
+	}
+
+	var hoursSince sql.NullFloat64
+	_ = a.db.QueryRowContext(ctx, `
+		SELECT (julianday('now') - julianday(MAX(created_at))) * 24.0
+		FROM interactions
+		WHERE user_id = ?
+	`, userID).Scan(&hoursSince)
+	if hoursSince.Valid && !math.IsNaN(hoursSince.Float64) && !math.IsInf(hoursSince.Float64, 0) && hoursSince.Float64 >= 0 {
+		stats.HoursSinceLastSession = hoursSince.Float64
+	}
+
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT COALESCE(c.source_id, ''), COUNT(*)
+		FROM interactions i
+		JOIN clips c ON c.id = i.clip_id
+		WHERE i.user_id = ?
+		GROUP BY c.source_id
+	`, userID)
+	if err == nil {
+		for rows.Next() {
+			var sourceID string
+			var count float64
+			if rows.Scan(&sourceID, &count) == nil {
+				stats.ChannelAffinity[sourceID] = count
+			}
+		}
+		rows.Close()
+	}
+
+	topicRows, err := a.db.QueryContext(ctx, `SELECT topic_id FROM user_topic_affinities WHERE user_id = ?`, userID)
+	if err == nil {
+		for topicRows.Next() {
+			var topicID string
+			if topicRows.Scan(&topicID) == nil {
+				stats.TopicAffinities[topicID] = struct{}{}
+			}
+		}
+		topicRows.Close()
+	}
+
+	return stats
+}
+
+func (a *App) loadClipTopicStats(ctx context.Context, clipIDs []string, userTopics map[string]struct{}) (map[string]int, map[string]int) {
+	topicCount := make(map[string]int, len(clipIDs))
+	topicOverlap := make(map[string]int, len(clipIDs))
+	if len(clipIDs) == 0 {
+		return topicCount, topicOverlap
+	}
+
+	ph := make([]string, len(clipIDs))
+	args := make([]interface{}, len(clipIDs))
+	for i, id := range clipIDs {
+		ph[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := a.db.QueryContext(ctx,
+		`SELECT clip_id, topic_id FROM clip_topics WHERE clip_id IN (`+strings.Join(ph, ",")+`)`, args...)
+	if err != nil {
+		return topicCount, topicOverlap
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var clipID, topicID string
+		if rows.Scan(&clipID, &topicID) != nil {
+			continue
+		}
+		topicCount[clipID]++
+		if _, ok := userTopics[topicID]; ok {
+			topicOverlap[clipID]++
+		}
+	}
+
+	return topicCount, topicOverlap
 }
 
 func (a *App) ltrModelRefreshLoop() {

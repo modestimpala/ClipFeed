@@ -21,6 +21,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			if json.Unmarshal([]byte(queryStr), &fq) == nil {
 				clips, err := a.applyFilterToFeed(r.Context(), &fq, userID)
 				if err == nil {
+					a.rankFeed(r.Context(), clips, userID, nil)
 					writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips), "filter_id": filterID})
 					return
 				}
@@ -52,7 +53,11 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			)
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
-			       c.created_at, s.channel_name, s.platform, s.url
+			       c.created_at, s.channel_name, s.platform, s.url,
+			       COALESCE(c.source_id, ''),
+			       CAST(LENGTH(COALESCE(c.transcript, '')) AS REAL),
+			       CAST(COALESCE(c.file_size_bytes, 0) AS REAL),
+			       COALESCE((julianday('now') - julianday(c.created_at)) * 24.0, 0)
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
@@ -70,7 +75,11 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 		rows, err = a.db.QueryContext(r.Context(), `
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
-			       c.created_at, s.channel_name, s.platform, s.url
+			       c.created_at, s.channel_name, s.platform, s.url,
+			       COALESCE(c.source_id, ''),
+			       CAST(LENGTH(COALESCE(c.transcript, '')) AS REAL),
+			       CAST(COALESCE(c.file_size_bytes, 0) AS REAL),
+			       COALESCE((julianday('now') - julianday(c.created_at)) * 24.0, 0)
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
@@ -87,7 +96,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	clips := scanClips(rows)
-	a.applyTopicBoost(r.Context(), clips, userID, topicWeights)
+	a.rankFeed(r.Context(), clips, userID, topicWeights)
 	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
 }
 
