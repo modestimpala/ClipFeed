@@ -3,6 +3,7 @@
 node_modules/
 web/dist/
 api/server
+api/clipfeed
 __pycache__/
 *.pyc
 *.pyo
