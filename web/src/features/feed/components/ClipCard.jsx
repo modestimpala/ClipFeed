@@ -2,7 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
 
-export const ClipCard = React.forwardRef(function ClipCard({ clip, isActive, onInteract }, ref) {
+export const ClipCard = React.forwardRef(function ClipCard({ 
+  clip, 
+  isActive, 
+  shouldRenderVideo,
+  isMuted,
+  onUnmute,
+  onInteract 
+}, ref) {
   const videoRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -12,13 +19,13 @@ export const ClipCard = React.forwardRef(function ClipCard({ clip, isActive, onI
   const startTimeRef = useRef(null);
 
   useEffect(() => {
-    if (!isActive || !clip) return;
+    if (!shouldRenderVideo || !clip) return;
     let cancelled = false;
     api.getStreamUrl(clip.id).then((data) => {
       if (!cancelled) setStreamUrl(data.url);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [clip?.id, isActive]);
+  }, [clip?.id, shouldRenderVideo]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -30,7 +37,10 @@ export const ClipCard = React.forwardRef(function ClipCard({ clip, isActive, onI
         setPlaying(true);
         startTimeRef.current = Date.now();
         onInteract?.(clip.id, 'view');
-      }).catch(() => setPlaying(false));
+      }).catch((e) => {
+        console.warn("Autoplay prevented:", e);
+        setPlaying(false);
+      });
     } else {
       video.pause();
       video.removeAttribute('src');
@@ -57,11 +67,17 @@ export const ClipCard = React.forwardRef(function ClipCard({ clip, isActive, onI
       video.removeEventListener('timeupdate', onTime);
       video.removeEventListener('ended', onEnd);
     };
-  }, []);
+  }, [shouldRenderVideo]);
 
-  function togglePlay() {
+  function handleVideoClick() {
     const video = videoRef.current;
     if (!video) return;
+
+    if (isMuted) {
+      onUnmute();
+      return;
+    }
+
     if (video.paused) {
       video.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
     } else {
@@ -87,8 +103,30 @@ export const ClipCard = React.forwardRef(function ClipCard({ clip, isActive, onI
   if (!clip) return <div className="clip-card" />;
 
   return (
-    <div className="clip-card" ref={ref} data-clip-id={clip.id} onClick={togglePlay}>
-      <video ref={videoRef} playsInline preload="none" loop />
+    <div className="clip-card" ref={ref} data-clip-id={clip.id} onClick={handleVideoClick}>
+      
+      {shouldRenderVideo ? (
+        <video 
+          ref={videoRef} 
+          playsInline 
+          preload="metadata"
+          loop 
+          muted={isMuted}
+        />
+      ) : (
+        <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000' }} />
+      )}
+
+      {isActive && isMuted && (
+        <div className="unmute-overlay" style={{
+          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+          background: 'rgba(0,0,0,0.6)', padding: '12px 24px', borderRadius: '30px',
+          color: 'white', fontWeight: 'bold', pointerEvents: 'none', zIndex: 10
+        }}>
+          Tap to Unmute
+        </div>
+      )}
+
       <div className="clip-overlay">
         <div className="clip-info">
           <div className="clip-title">{clip.title}</div>

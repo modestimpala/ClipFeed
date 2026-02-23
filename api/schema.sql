@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     error        TEXT,
     attempts     INTEGER DEFAULT 0,
     max_attempts INTEGER DEFAULT 3,
+    run_after    TEXT,
     locked_at    TEXT,
     started_at   TEXT,
     completed_at TEXT,

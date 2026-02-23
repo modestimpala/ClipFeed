@@ -10,6 +10,7 @@ import './features/ingest/ingest.css';
 import './features/jobs/jobs.css';
 import './features/saved/saved.css';
 import './features/settings/settings.css';
+import './shared/install-prompt.css';
 import App from './app/App';
 
 createRoot(document.getElementById('root')).render(<App />);
