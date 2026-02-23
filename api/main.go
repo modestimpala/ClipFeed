@@ -601,7 +601,7 @@ func detectPlatform(url string) string {
 	case strings.Contains(url, "vimeo.com"):
 		return "vimeo"
 	case strings.Contains(url, "tiktok.com"):
-		return "instagram"
+		return "tiktok"
 	case strings.Contains(url, "instagram.com"):
 		return "instagram"
 	case strings.Contains(url, "twitter.com") || strings.Contains(url, "x.com"):

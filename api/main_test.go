@@ -63,7 +63,7 @@ func registerUser(t *testing.T, app *App, username, password string) string {
 	return resp["token"].(string)
 }
 
-func authRequest(t *testing.T, method, url string, body interface{}, token string) *http.Request {
+func authRequest(t *testing.T, app *App, method, url string, body interface{}, token string) *http.Request {
 	t.Helper()
 	var b []byte
 	if body != nil {
@@ -72,6 +72,10 @@ func authRequest(t *testing.T, method, url string, body interface{}, token strin
 	req := httptest.NewRequest(method, url, bytes.NewReader(b))
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+		if uid := app.extractUserID(req); uid != "" {
+			ctx := context.WithValue(req.Context(), userIDKey, uid)
+			req = req.WithContext(ctx)
+		}
 	}
 	return req
 }
@@ -386,7 +390,7 @@ func TestHandleInteraction_ValidActions(t *testing.T) {
 	for _, action := range []string{"view", "like", "dislike", "save", "share", "skip", "watch_full"} {
 		t.Run(action, func(t *testing.T) {
 			body := map[string]interface{}{"action": action, "watch_duration_seconds": 10.0, "watch_percentage": 0.5}
-			req := authRequest(t, "POST", "/api/clips/clip1/interact", body, token)
+			req := authRequest(t, app, "POST", "/api/clips/clip1/interact", body, token)
 			req = withChiParam(req, "id", "clip1")
 			rec := httptest.NewRecorder()
 
@@ -407,7 +411,7 @@ func TestHandleInteraction_InvalidAction(t *testing.T) {
 	app.db.Exec(`INSERT INTO clips (id, source_id, duration_seconds, storage_key, status) VALUES ('clip2', 'src2', 30.0, 'key2', 'ready')`)
 
 	body := map[string]interface{}{"action": "invalid_action"}
-	req := authRequest(t, "POST", "/api/clips/clip2/interact", body, token)
+	req := authRequest(t, app, "POST", "/api/clips/clip2/interact", body, token)
 	req = withChiParam(req, "id", "clip2")
 	rec := httptest.NewRecorder()
 
@@ -447,7 +451,7 @@ func TestHandleFeed_Authenticated(t *testing.T) {
 	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('src4', 'http://x.com', 'direct')`)
 	app.db.Exec(`INSERT INTO clips (id, source_id, title, duration_seconds, storage_key, status, content_score) VALUES ('c2', 'src4', 'Test Clip', 30.0, 'key', 'ready', 0.8)`)
 
-	req := authRequest(t, "GET", "/api/feed", nil, token)
+	req := authRequest(t, app, "GET", "/api/feed", nil, token)
 	rec := httptest.NewRecorder()
 	app.optionalAuth(app.handleFeed)(rec, req)
 
@@ -527,7 +531,7 @@ func TestSaveAndUnsaveClip(t *testing.T) {
 	app.db.Exec(`INSERT INTO clips (id, source_id, duration_seconds, storage_key, status) VALUES ('c5', 'src7', 30.0, 'key', 'ready')`)
 
 	// Save
-	req := authRequest(t, "POST", "/api/clips/c5/save", nil, token)
+	req := authRequest(t, app, "POST", "/api/clips/c5/save", nil, token)
 	req = withChiParam(req, "id", "c5")
 	rec := httptest.NewRecorder()
 	app.handleSaveClip(rec, req)
@@ -543,7 +547,7 @@ func TestSaveAndUnsaveClip(t *testing.T) {
 	}
 
 	// Unsave
-	req = authRequest(t, "DELETE", "/api/clips/c5/save", nil, token)
+	req = authRequest(t, app, "DELETE", "/api/clips/c5/save", nil, token)
 	req = withChiParam(req, "id", "c5")
 	rec = httptest.NewRecorder()
 	app.handleUnsaveClip(rec, req)
@@ -565,7 +569,7 @@ func TestHandleIngest_Success(t *testing.T) {
 	token := registerUser(t, app, "ingester", "password123")
 
 	body := map[string]string{"url": "https://www.youtube.com/watch?v=abc123"}
-	req := authRequest(t, "POST", "/api/ingest", body, token)
+	req := authRequest(t, app, "POST", "/api/ingest", body, token)
 	rec := httptest.NewRecorder()
 
 	app.handleIngest(rec, req)
@@ -597,7 +601,7 @@ func TestHandleIngest_EmptyURL(t *testing.T) {
 	token := registerUser(t, app, "nourling", "password123")
 
 	body := map[string]string{"url": ""}
-	req := authRequest(t, "POST", "/api/ingest", body, token)
+	req := authRequest(t, app, "POST", "/api/ingest", body, token)
 	rec := httptest.NewRecorder()
 
 	app.handleIngest(rec, req)
@@ -614,7 +618,7 @@ func TestHandleSetCookie_ValidPlatform(t *testing.T) {
 	token := registerUser(t, app, "cookieuser", "password123")
 
 	body := map[string]string{"cookie_str": "session_id=abc123"}
-	req := authRequest(t, "PUT", "/api/me/cookies/tiktok", body, token)
+	req := authRequest(t, app, "PUT", "/api/me/cookies/tiktok", body, token)
 	req = withChiParam(req, "platform", "tiktok")
 	rec := httptest.NewRecorder()
 
@@ -630,7 +634,7 @@ func TestHandleSetCookie_InvalidPlatform(t *testing.T) {
 	token := registerUser(t, app, "badplat", "password123")
 
 	body := map[string]string{"cookie_str": "session_id=abc123"}
-	req := authRequest(t, "PUT", "/api/me/cookies/youtube", body, token)
+	req := authRequest(t, app, "PUT", "/api/me/cookies/youtube", body, token)
 	req = withChiParam(req, "platform", "youtube")
 	rec := httptest.NewRecorder()
 
@@ -647,13 +651,13 @@ func TestHandleDeleteCookie(t *testing.T) {
 
 	// First set a cookie
 	body := map[string]string{"cookie_str": "session_id=abc123"}
-	req := authRequest(t, "PUT", "/api/me/cookies/instagram", body, token)
+	req := authRequest(t, app, "PUT", "/api/me/cookies/instagram", body, token)
 	req = withChiParam(req, "platform", "instagram")
 	rec := httptest.NewRecorder()
 	app.handleSetCookie(rec, req)
 
 	// Delete it
-	req = authRequest(t, "DELETE", "/api/me/cookies/instagram", nil, token)
+	req = authRequest(t, app, "DELETE", "/api/me/cookies/instagram", nil, token)
 	req = withChiParam(req, "platform", "instagram")
 	rec = httptest.NewRecorder()
 	app.handleDeleteCookie(rec, req)
@@ -671,7 +675,7 @@ func TestCollectionCRUD(t *testing.T) {
 
 	// Create collection
 	body := map[string]string{"title": "My Favorites", "description": "Best clips"}
-	req := authRequest(t, "POST", "/api/collections", body, token)
+	req := authRequest(t, app, "POST", "/api/collections", body, token)
 	rec := httptest.NewRecorder()
 	app.handleCreateCollection(rec, req)
 
@@ -682,7 +686,7 @@ func TestCollectionCRUD(t *testing.T) {
 	collectionID := resp["id"].(string)
 
 	// List collections
-	req = authRequest(t, "GET", "/api/collections", nil, token)
+	req = authRequest(t, app, "GET", "/api/collections", nil, token)
 	rec = httptest.NewRecorder()
 	app.handleListCollections(rec, req)
 
@@ -704,7 +708,7 @@ func TestCollectionCRUD(t *testing.T) {
 	app.db.Exec(`INSERT INTO clips (id, source_id, duration_seconds, storage_key, status) VALUES ('c6', 'src8', 30.0, 'key', 'ready')`)
 
 	addBody := map[string]string{"clip_id": "c6"}
-	req = authRequest(t, "POST", "/api/collections/"+collectionID+"/clips", addBody, token)
+	req = authRequest(t, app, "POST", "/api/collections/"+collectionID+"/clips", addBody, token)
 	req = withChiParam(req, "id", collectionID)
 	rec = httptest.NewRecorder()
 	app.handleAddToCollection(rec, req)
@@ -714,7 +718,7 @@ func TestCollectionCRUD(t *testing.T) {
 	}
 
 	// Remove clip from collection
-	req = authRequest(t, "DELETE", "/api/collections/"+collectionID+"/clips/c6", nil, token)
+	req = authRequest(t, app, "DELETE", "/api/collections/"+collectionID+"/clips/c6", nil, token)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", collectionID)
 	rctx.URLParams.Add("clipId", "c6")
@@ -768,13 +772,9 @@ func TestHandleGetProfile(t *testing.T) {
 	app := newTestApp(t)
 	token := registerUser(t, app, "profuser", "password123")
 
-	req := authRequest(t, "GET", "/api/me", nil, token)
+	req := authRequest(t, app, "GET", "/api/me", nil, token)
 	rec := httptest.NewRecorder()
-
-	// Need to extract user_id and set in context via middleware
-	userID := app.extractUserID(req)
-	ctx := context.WithValue(req.Context(), userIDKey, userID)
-	app.handleGetProfile(rec, req.WithContext(ctx))
+	app.handleGetProfile(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
@@ -791,11 +791,9 @@ func TestHandleListSaved_Empty(t *testing.T) {
 	app := newTestApp(t)
 	token := registerUser(t, app, "emptysaver", "password123")
 
-	req := authRequest(t, "GET", "/api/me/saved", nil, token)
-	userID := app.extractUserID(req)
-	ctx := context.WithValue(req.Context(), userIDKey, userID)
+	req := authRequest(t, app, "GET", "/api/me/saved", nil, token)
 	rec := httptest.NewRecorder()
-	app.handleListSaved(rec, req.WithContext(ctx))
+	app.handleListSaved(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -808,11 +806,9 @@ func TestHandleListJobs(t *testing.T) {
 	app := newTestApp(t)
 	token := registerUser(t, app, "jobuser", "password123")
 
-	req := authRequest(t, "GET", "/api/jobs", nil, token)
-	userID := app.extractUserID(req)
-	ctx := context.WithValue(req.Context(), userIDKey, userID)
+	req := authRequest(t, app, "GET", "/api/jobs", nil, token)
 	rec := httptest.NewRecorder()
-	app.handleListJobs(rec, req.WithContext(ctx))
+	app.handleListJobs(rec, req)
 
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
