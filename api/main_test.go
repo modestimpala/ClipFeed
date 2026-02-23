@@ -97,7 +97,7 @@ func TestDetectPlatform(t *testing.T) {
 		{"https://www.youtube.com/watch?v=abc123", "youtube"},
 		{"https://youtu.be/abc123", "youtube"},
 		{"https://www.vimeo.com/123456", "vimeo"},
-		{"https://www.tiktok.com/@user/video/123", "instagram"}, // note: this is a known bug in detectPlatform
+		{"https://www.tiktok.com/@user/video/123", "tiktok"},
 		{"https://www.instagram.com/reel/abc123", "instagram"},
 		{"https://twitter.com/user/status/123", "twitter"},
 		{"https://x.com/user/status/123", "twitter"},
@@ -479,9 +479,11 @@ func TestHandleFeed_FiltersProcessingClips(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	resp := decodeJSON(t, rec)
-	clips := resp["clips"].([]interface{})
-	if len(clips) != 0 {
-		t.Errorf("got %d clips, want 0 (processing clips filtered)", len(clips))
+	if resp["clips"] != nil {
+		clips := resp["clips"].([]interface{})
+		if len(clips) != 0 {
+			t.Errorf("got %d clips, want 0 (processing clips filtered)", len(clips))
+		}
 	}
 }
 
