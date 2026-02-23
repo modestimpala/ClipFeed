@@ -225,3 +225,76 @@ CREATE TRIGGER IF NOT EXISTS trg_clip_topic_dec
 BEGIN
     UPDATE topics SET clip_count = clip_count - 1 WHERE id = OLD.topic_id;
 END;
+
+-- --- Embeddings ---
+
+CREATE TABLE IF NOT EXISTS clip_embeddings (
+    clip_id          TEXT PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    text_embedding   BLOB,
+    visual_embedding BLOB,
+    model_version    TEXT NOT NULL DEFAULT '',
+    created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- --- User Profile Embeddings ---
+
+CREATE TABLE IF NOT EXISTS user_embeddings (
+    user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    text_embedding   BLOB,
+    interaction_count INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- --- Saved Filters ---
+
+CREATE TABLE IF NOT EXISTS saved_filters (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    query       TEXT NOT NULL,
+    is_default  INTEGER DEFAULT 0,
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_filters_user ON saved_filters(user_id);
+
+-- --- Content Scout ---
+
+CREATE TABLE IF NOT EXISTS scout_sources (
+    id                   TEXT PRIMARY KEY,
+    user_id              TEXT REFERENCES users(id),
+    source_type          TEXT NOT NULL,
+    platform             TEXT NOT NULL,
+    identifier           TEXT NOT NULL,
+    is_active            INTEGER DEFAULT 1,
+    last_checked         TEXT,
+    check_interval_hours INTEGER DEFAULT 24,
+    created_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(platform, identifier)
+);
+
+CREATE TABLE IF NOT EXISTS scout_candidates (
+    id              TEXT PRIMARY KEY,
+    scout_source_id TEXT REFERENCES scout_sources(id),
+    url             TEXT NOT NULL,
+    platform        TEXT NOT NULL,
+    external_id     TEXT NOT NULL,
+    title           TEXT,
+    channel_name    TEXT,
+    duration_seconds REAL,
+    llm_score       REAL,
+    status          TEXT DEFAULT 'pending',
+    created_at      TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE(platform, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scout_candidates_status ON scout_candidates(status);
+
+-- --- Clip Summaries (LLM-generated, cached) ---
+
+CREATE TABLE IF NOT EXISTS clip_summaries (
+    clip_id    TEXT PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    summary    TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);

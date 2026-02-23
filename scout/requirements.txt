@@ -1,0 +1,2 @@
+requests>=2.31.0
+yt-dlp[default]>=2024.0.0
