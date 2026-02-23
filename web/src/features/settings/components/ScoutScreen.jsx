@@ -88,6 +88,7 @@ export function ScoutScreen({ onBack, threshold, onThresholdChange }) {
                   source={s}
                   onUpdate={handleUpdateSource}
                   onDelete={handleDeleteSource}
+                  onTrigger={fetchSources}
                 />
               ))
             )}

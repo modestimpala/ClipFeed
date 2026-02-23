@@ -49,15 +49,25 @@ def open_db():
     return db
 
 
-def check_sources(db: sqlite3.Connection) -> None:
-    """Query active scout sources, run yt-dlp, insert new candidates."""
-    cur = db.execute("""
-        SELECT id, source_type, platform, identifier, check_interval_hours
-        FROM scout_sources
-        WHERE is_active = 1
-          AND (last_checked IS NULL
-               OR last_checked < datetime('now', '-' || check_interval_hours || ' hours'))
-    """)
+def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -> None:
+    """Query active scout sources, run yt-dlp, insert new candidates.
+    If source_ids is provided, only check those sources (bypass interval check).
+    """
+    if source_ids:
+        placeholders = ",".join("?" for _ in source_ids)
+        cur = db.execute(
+            f"SELECT id, source_type, platform, identifier, check_interval_hours "
+            f"FROM scout_sources WHERE id IN ({placeholders})",
+            source_ids,
+        )
+    else:
+        cur = db.execute("""
+            SELECT id, source_type, platform, identifier, check_interval_hours
+            FROM scout_sources
+            WHERE is_active = 1
+              AND (last_checked IS NULL
+                   OR last_checked < datetime('now', '-' || check_interval_hours || ' hours'))
+        """)
     sources = cur.fetchall()
 
     for row in sources:
@@ -281,34 +291,72 @@ def auto_approve(db: sqlite3.Connection) -> None:
             )
 
 
+TRIGGER_POLL_INTERVAL = 10  # seconds between checks for force_check sources
+
+
+def process_triggers(db: sqlite3.Connection) -> bool:
+    """Check for force_check sources, process them, return True if any found."""
+    cur = db.execute(
+        "SELECT id FROM scout_sources WHERE force_check = 1"
+    )
+    triggered = [row["id"] for row in cur.fetchall()]
+    if not triggered:
+        return False
+
+    log.info("Processing %d triggered source(s): %s", len(triggered),
+             ", ".join(t[:8] for t in triggered))
+
+    check_sources(db, source_ids=triggered)
+    if not shutdown:
+        evaluate_candidates(db)
+    if not shutdown:
+        auto_approve(db)
+
+    db.execute(
+        "UPDATE scout_sources SET force_check = 0 WHERE force_check = 1"
+    )
+    return True
+
+
 def main():
     log.info(
-        "Scout worker started (interval=%ds, threshold=%.1f)",
+        "Scout worker started (interval=%ds, threshold=%.1f, trigger_poll=%ds)",
         SCOUT_INTERVAL,
         LLM_THRESHOLD,
+        TRIGGER_POLL_INTERVAL,
     )
 
     db = open_db()
     try:
+        elapsed = 0
         while not shutdown:
+            # Fast-poll: check for manually triggered sources
             try:
-                check_sources(db)
-                if shutdown:
-                    break
-                evaluate_candidates(db)
-                if shutdown:
-                    break
-                auto_approve(db)
+                process_triggers(db)
             except Exception as e:
-                log.error("Scout run error: %s", e)
+                log.error("Trigger processing error: %s", e)
+
+            # Full cycle when interval elapses
+            if elapsed >= SCOUT_INTERVAL:
+                elapsed = 0
+                try:
+                    log.info("Starting full scout cycle")
+                    check_sources(db)
+                    if shutdown:
+                        break
+                    evaluate_candidates(db)
+                    if shutdown:
+                        break
+                    auto_approve(db)
+                    log.info("Full scout cycle complete")
+                except Exception as e:
+                    log.error("Scout run error: %s", e)
 
             if shutdown:
                 break
 
-            for _ in range(SCOUT_INTERVAL):
-                if shutdown:
-                    break
-                time.sleep(1)
+            time.sleep(TRIGGER_POLL_INTERVAL)
+            elapsed += TRIGGER_POLL_INTERVAL
 
     finally:
         db.close()

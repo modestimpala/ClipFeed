@@ -270,6 +270,7 @@ CREATE TABLE IF NOT EXISTS scout_sources (
     is_active            INTEGER DEFAULT 1,
     last_checked         TEXT,
     check_interval_hours INTEGER DEFAULT 24,
+    force_check          INTEGER DEFAULT 0,
     created_at           TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     UNIQUE(platform, identifier)
 );

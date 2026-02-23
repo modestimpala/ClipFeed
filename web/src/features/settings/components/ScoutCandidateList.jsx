@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 
 function timeAgo(iso) {
@@ -15,12 +15,19 @@ function truncate(str, len) {
   return str.length > len ? str.slice(0, len) + '…' : str;
 }
 
+const TABS = ['pending', 'ingested', 'rejected'];
+const EMPTY_MSG = {
+  pending: 'No pending candidates. Trigger a source check to discover new ones.',
+  ingested: 'No ingested candidates yet.',
+  rejected: 'No rejected candidates.',
+};
+
 export function ScoutCandidateList() {
-  const [tab, setTab] = useState('ingested');
+  const [tab, setTab] = useState('pending');
   const [candidates, setCandidates] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const fetchCandidates = useCallback(() => {
     setLoading(true);
     api.getScoutCandidates(tab)
       .then((data) => setCandidates(data.candidates || []))
@@ -28,34 +35,44 @@ export function ScoutCandidateList() {
       .finally(() => setLoading(false));
   }, [tab]);
 
+  useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
+
+  // Auto-refresh pending tab every 5s
+  useEffect(() => {
+    if (tab !== 'pending') return;
+    const id = setInterval(fetchCandidates, 5000);
+    return () => clearInterval(id);
+  }, [tab, fetchCandidates]);
+
   function handleApprove(id) {
     setCandidates((prev) => prev.filter((c) => c.id !== id));
     api.approveCandidate(id).catch(() => {});
   }
 
+  function scoreBadgeClass(status) {
+    if (status === 'ingested') return 'green';
+    if (status === 'rejected') return 'red';
+    return 'neutral';
+  }
+
   return (
     <div className="scout-candidates">
       <div className="scout-pill-toggle">
-        <button
-          className={`scout-pill ${tab === 'ingested' ? 'active' : ''}`}
-          onClick={() => setTab('ingested')}
-        >
-          Ingested
-        </button>
-        <button
-          className={`scout-pill ${tab === 'rejected' ? 'active' : ''}`}
-          onClick={() => setTab('rejected')}
-        >
-          Rejected
-        </button>
+        {TABS.map((t) => (
+          <button
+            key={t}
+            className={`scout-pill ${tab === t ? 'active' : ''}`}
+            onClick={() => setTab(t)}
+          >
+            {t.charAt(0).toUpperCase() + t.slice(1)}
+          </button>
+        ))}
       </div>
 
       {loading ? (
         <div className="scout-empty">Loading…</div>
       ) : candidates.length === 0 ? (
-        <div className="scout-empty">
-          {tab === 'ingested' ? 'No ingested candidates yet.' : 'No rejected candidates.'}
-        </div>
+        <div className="scout-empty">{EMPTY_MSG[tab]}</div>
       ) : (
         <div className="scout-candidate-list">
           {candidates.map((c) => (
@@ -68,14 +85,17 @@ export function ScoutCandidateList() {
                 <div className="scout-candidate-title">{truncate(c.title, 60)}</div>
                 <div className="scout-candidate-meta">
                   {c.channel_name && <span>{c.channel_name}</span>}
+                  {c.duration_seconds != null && (
+                    <span>{Math.round(c.duration_seconds / 60)}m</span>
+                  )}
                   <span>{timeAgo(c.created_at)}</span>
                 </div>
               </div>
               <div className="scout-candidate-right">
-                <span className={`scout-score-badge ${tab === 'ingested' ? 'green' : 'red'}`}>
+                <span className={`scout-score-badge ${scoreBadgeClass(c.status)}`}>
                   {c.llm_score != null ? Number(c.llm_score).toFixed(1) : '–'}
                 </span>
-                {tab === 'rejected' && (
+                {(tab === 'rejected' || tab === 'pending') && c.status !== 'ingested' && (
                   <button
                     className="scout-ingest-btn"
                     onClick={(e) => { e.stopPropagation(); handleApprove(c.id); }}
