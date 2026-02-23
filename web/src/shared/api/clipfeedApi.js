@@ -30,6 +30,7 @@ export const api = {
   ingest: (url) => request('POST', '/ingest', { url }),
 
   getProfile: () => request('GET', '/me'),
+  getTopics: () => request('GET', '/topics'),
   updatePreferences: (prefs) => request('PUT', '/me/preferences', prefs),
   getSaved: () => request('GET', '/me/saved'),
   getHistory: () => request('GET', '/me/history'),

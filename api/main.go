@@ -387,8 +387,17 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 
 	var rows *sql.Rows
 	var err error
+	var topicWeights map[string]float64
 
 	if userID != "" {
+		var topicWeightsJSON string
+		if err := a.db.QueryRowContext(r.Context(),
+			`SELECT COALESCE(topic_weights, '{}') FROM user_preferences WHERE user_id = ?`,
+			userID,
+		).Scan(&topicWeightsJSON); err == nil {
+			json.Unmarshal([]byte(topicWeightsJSON), &topicWeights)
+		}
+
 		rows, err = a.db.QueryContext(r.Context(), `
 			WITH prefs AS (
 				SELECT exploration_rate, min_clip_seconds, max_clip_seconds
@@ -435,7 +444,42 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	clips := scanClips(rows)
+
+	if len(topicWeights) > 0 {
+		for i, clip := range clips {
+			topics, _ := clip["topics"].([]string)
+			contentScore, _ := clip["content_score"].(float64)
+			clips[i]["_score"] = contentScore * computeTopicBoost(topics, topicWeights)
+		}
+		sort.SliceStable(clips, func(i, j int) bool {
+			si, _ := clips[i]["_score"].(float64)
+			sj, _ := clips[j]["_score"].(float64)
+			return si > sj
+		})
+		for _, clip := range clips {
+			delete(clip, "_score")
+		}
+	}
+
 	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
+}
+
+func computeTopicBoost(clipTopics []string, weights map[string]float64) float64 {
+	if len(clipTopics) == 0 {
+		return 1.0
+	}
+	sum := 0.0
+	count := 0
+	for _, t := range clipTopics {
+		if w, ok := weights[t]; ok {
+			sum += w
+			count++
+		}
+	}
+	if count == 0 {
+		return 1.0
+	}
+	return sum / float64(count)
 }
 
 func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
@@ -709,21 +753,46 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 
 	var username, email, displayName, createdAt string
 	var avatarURL *string
+	var explorationRate float64
+	var topicWeightsJSON string
+	var minClip, maxClip int
+	var autoplay int
 
 	err := a.db.QueryRowContext(r.Context(), `
-		SELECT username, email, display_name, avatar_url, created_at
-		FROM users WHERE id = ?
-	`, userID).Scan(&username, &email, &displayName, &avatarURL, &createdAt)
+		SELECT u.username, u.email, u.display_name, u.avatar_url, u.created_at,
+		       COALESCE(p.exploration_rate, 0.3),
+		       COALESCE(p.topic_weights, '{}'),
+		       COALESCE(p.min_clip_seconds, 5),
+		       COALESCE(p.max_clip_seconds, 120),
+		       COALESCE(p.autoplay, 1)
+		FROM users u
+		LEFT JOIN user_preferences p ON u.id = p.user_id
+		WHERE u.id = ?
+	`, userID).Scan(&username, &email, &displayName, &avatarURL, &createdAt,
+		&explorationRate, &topicWeightsJSON, &minClip, &maxClip, &autoplay)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "user not found"})
 		return
 	}
 
+	var topicWeights map[string]interface{}
+	json.Unmarshal([]byte(topicWeightsJSON), &topicWeights)
+	if topicWeights == nil {
+		topicWeights = make(map[string]interface{})
+	}
+
 	writeJSON(w, 200, map[string]interface{}{
 		"id": userID, "username": username, "email": email,
 		"display_name": displayName, "avatar_url": avatarURL,
 		"created_at": createdAt,
+		"preferences": map[string]interface{}{
+			"exploration_rate": explorationRate,
+			"topic_weights":    topicWeights,
+			"min_clip_seconds": minClip,
+			"max_clip_seconds": maxClip,
+			"autoplay":         autoplay == 1,
+		},
 	})
 }
 
@@ -744,7 +813,9 @@ func (a *App) handleGetTopics(w http.ResponseWriter, r *http.Request) {
 		var topics []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		for _, t := range topics {
-			counts[t]++
+			if t != "" {
+				counts[t]++
+			}
 		}
 	}
 
