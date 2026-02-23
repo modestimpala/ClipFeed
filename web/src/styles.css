@@ -569,8 +569,20 @@ input[type="range"] {
   border-radius: var(--radius-sm);
   margin-bottom: 8px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  gap: 0;
+}
+
+.job-card-failed { cursor: pointer; }
+
+.job-card-header {
+  display: flex;
+  align-items: flex-start;
   gap: 12px;
+}
+
+.job-card-header .job-status {
+  margin-top: 5px;
 }
 
 .job-status {
@@ -595,15 +607,87 @@ input[type="range"] {
   min-width: 0;
 }
 
+.job-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .job-type {
   font-size: 14px;
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.job-time {
+.job-platform {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  background: var(--bg-surface);
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.job-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.job-meta-sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.job-status-label {
+  font-weight: 500;
+}
+.job-status-label.failed { color: var(--accent); }
+.job-status-label.running { color: var(--warning); }
+.job-status-label.complete { color: var(--success); }
+
+.job-error {
+  margin-top: 10px;
+  margin-left: 20px;
+  padding: 10px 12px;
+  background: rgba(255, 59, 48, 0.08);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.job-error-summary {
+  color: var(--text-primary);
+}
+
+.job-error-detail {
+  margin-top: 8px;
+  padding: 8px;
+  font-size: 11px;
   font-family: var(--font-mono);
+  color: var(--text-dim);
+  background: var(--bg-surface);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
 }
 
 /* --- Saved Screen --- */
