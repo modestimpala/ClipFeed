@@ -165,3 +165,63 @@ BEGIN
     WHERE id = OLD.clip_id
       AND NOT EXISTS (SELECT 1 FROM saved_clips WHERE clip_id = OLD.clip_id);
 END;
+
+-- --- Topic Graph ---
+
+CREATE TABLE IF NOT EXISTS topics (
+    id          TEXT PRIMARY KEY,
+    name        TEXT UNIQUE NOT NULL,
+    slug        TEXT UNIQUE NOT NULL,
+    path        TEXT NOT NULL DEFAULT '',
+    parent_id   TEXT REFERENCES topics(id) ON DELETE SET NULL,
+    depth       INTEGER NOT NULL DEFAULT 0,
+    clip_count  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_path ON topics(path);
+CREATE INDEX IF NOT EXISTS idx_topics_parent ON topics(parent_id);
+
+CREATE TABLE IF NOT EXISTS topic_edges (
+    source_id   TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    target_id   TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    relation    TEXT NOT NULL DEFAULT 'related_to',
+    weight      REAL NOT NULL DEFAULT 1.0,
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (source_id, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_edges_target ON topic_edges(target_id);
+
+CREATE TABLE IF NOT EXISTS clip_topics (
+    clip_id     TEXT NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+    topic_id    TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    confidence  REAL NOT NULL DEFAULT 1.0,
+    source      TEXT NOT NULL DEFAULT 'keybert',
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (clip_id, topic_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_clip_topics_topic ON clip_topics(topic_id);
+
+CREATE TABLE IF NOT EXISTS user_topic_affinities (
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id    TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    weight      REAL NOT NULL DEFAULT 1.0,
+    source      TEXT NOT NULL DEFAULT 'explicit',
+    updated_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    PRIMARY KEY (user_id, topic_id)
+);
+
+-- Keep clip_count on topics accurate
+CREATE TRIGGER IF NOT EXISTS trg_clip_topic_inc
+    AFTER INSERT ON clip_topics FOR EACH ROW
+BEGIN
+    UPDATE topics SET clip_count = clip_count + 1 WHERE id = NEW.topic_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_clip_topic_dec
+    AFTER DELETE ON clip_topics FOR EACH ROW
+BEGIN
+    UPDATE topics SET clip_count = clip_count - 1 WHERE id = OLD.topic_id;
+END;

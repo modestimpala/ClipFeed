@@ -900,3 +900,163 @@ func TestHandleGetJob_NotFound(t *testing.T) {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
+
+// --- Topic Graph ---
+
+func TestTopicGraph_ComputeBoost_DirectMatch(t *testing.T) {
+	g := &TopicGraph{
+		nodes: map[string]*TopicNode{
+			"t1": {ID: "t1", Name: "cooking"},
+		},
+		edges: map[string][]TopicEdge{},
+	}
+	boost := g.computeBoost([]string{"t1"}, map[string]float64{"t1": 1.5})
+	if boost != 1.5 {
+		t.Errorf("boost = %f, want 1.5", boost)
+	}
+}
+
+func TestTopicGraph_ComputeBoost_AncestorDecay(t *testing.T) {
+	g := &TopicGraph{
+		nodes: map[string]*TopicNode{
+			"cooking":         {ID: "cooking", Name: "cooking"},
+			"italian-cuisine": {ID: "italian-cuisine", Name: "italian cuisine", ParentID: "cooking"},
+			"carbonara":       {ID: "carbonara", Name: "carbonara", ParentID: "italian-cuisine"},
+		},
+		edges: map[string][]TopicEdge{},
+	}
+
+	// User likes "cooking" (2 hops above "carbonara")
+	boost := g.computeBoost([]string{"carbonara"}, map[string]float64{"cooking": 2.0})
+	// 2.0 * 0.7^2 = 0.98
+	want := 2.0 * 0.7 * 0.7
+	if diff := boost - want; diff > 0.001 || diff < -0.001 {
+		t.Errorf("boost = %f, want %f", boost, want)
+	}
+}
+
+func TestTopicGraph_ComputeBoost_LateralEdge(t *testing.T) {
+	g := &TopicGraph{
+		nodes: map[string]*TopicNode{
+			"skating":     {ID: "skating", Name: "skating"},
+			"longboarding": {ID: "longboarding", Name: "longboarding"},
+		},
+		edges: map[string][]TopicEdge{
+			"skating": {{TargetID: "longboarding", Relation: "related_to", Weight: 0.8}},
+		},
+	}
+
+	// User likes longboarding, clip is about skating (lateral edge weight 0.8)
+	boost := g.computeBoost([]string{"skating"}, map[string]float64{"longboarding": 1.5})
+	// 1.5 * 0.8 * 0.7 = 0.84
+	want := 1.5 * 0.8 * 0.7
+	if diff := boost - want; diff > 0.001 || diff < -0.001 {
+		t.Errorf("boost = %f, want %f", boost, want)
+	}
+}
+
+func TestTopicGraph_ComputeBoost_NoMatch(t *testing.T) {
+	g := &TopicGraph{
+		nodes: map[string]*TopicNode{
+			"t1": {ID: "t1", Name: "cooking"},
+			"t2": {ID: "t2", Name: "music"},
+		},
+		edges: map[string][]TopicEdge{},
+	}
+	boost := g.computeBoost([]string{"t1"}, map[string]float64{"t2": 1.5})
+	if boost != 1.0 {
+		t.Errorf("boost = %f, want 1.0 (no match)", boost)
+	}
+}
+
+func TestTopicGraph_ResolveByName(t *testing.T) {
+	g := &TopicGraph{
+		byName: map[string]*TopicNode{
+			"cooking": {ID: "t1", Name: "cooking"},
+		},
+	}
+	if n := g.resolveByName("Cooking"); n == nil || n.ID != "t1" {
+		t.Errorf("resolveByName(Cooking) = %v, want t1", n)
+	}
+	if n := g.resolveByName("nonexistent"); n != nil {
+		t.Errorf("resolveByName(nonexistent) = %v, want nil", n)
+	}
+}
+
+func TestHandleFeed_WithTopicGraph(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "graphuser", "password123")
+
+	// Remove SQL randomness so ordering is deterministic
+	app.db.Exec(`UPDATE user_preferences SET exploration_rate = 0 WHERE user_id = (SELECT id FROM users WHERE username = 'graphuser')`)
+
+	// Create topic hierarchy: cooking → italian
+	app.db.Exec(`INSERT INTO topics (id, name, slug, path, depth) VALUES ('t-cooking', 'cooking', 'cooking', 'cooking', 0)`)
+	app.db.Exec(`INSERT INTO topics (id, name, slug, path, parent_id, depth) VALUES ('t-italian', 'italian', 'italian', 'cooking/italian', 't-cooking', 1)`)
+
+	// Create two clips with same content_score; graph boost is the tiebreaker
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('src-g1', 'http://x.com/1', 'direct')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, title, duration_seconds, storage_key, status, content_score, topics) VALUES ('cg1', 'src-g1', 'Italian Recipe', 30.0, 'k1', 'ready', 0.5, '["italian"]')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, title, duration_seconds, storage_key, status, content_score, topics) VALUES ('cg2', 'src-g1', 'Random Clip', 30.0, 'k2', 'ready', 0.5, '[]')`)
+
+	// Link clip to topic graph
+	app.db.Exec(`INSERT INTO clip_topics (clip_id, topic_id, confidence, source) VALUES ('cg1', 't-italian', 1.0, 'keybert')`)
+
+	// Set user affinity for parent "cooking" — boost propagates down the tree to "italian"
+	app.db.Exec(`INSERT INTO user_topic_affinities (user_id, topic_id, weight, source)
+		SELECT u.id, 't-cooking', 2.0, 'explicit' FROM users u WHERE u.username = 'graphuser'`)
+
+	app.refreshTopicGraph()
+
+	req := authRequest(t, app, "GET", "/api/feed", nil, token)
+	rec := httptest.NewRecorder()
+	app.optionalAuth(app.handleFeed)(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeJSON(t, rec)
+	clips := resp["clips"].([]interface{})
+	if len(clips) < 2 {
+		t.Fatalf("got %d clips, want at least 2", len(clips))
+	}
+
+	// Italian recipe: 0.5 * (2.0 * 0.7) = 0.7; Random clip: 0.5 * 1.0 = 0.5
+	first := clips[0].(map[string]interface{})
+	if first["title"] != "Italian Recipe" {
+		t.Errorf("first clip = %v, want 'Italian Recipe' (graph boost should rank it higher)", first["title"])
+	}
+}
+
+func TestHandleGetTopicTree(t *testing.T) {
+	app := newTestApp(t)
+
+	app.db.Exec(`INSERT INTO topics (id, name, slug, path, depth) VALUES ('t1', 'cooking', 'cooking', 'cooking', 0)`)
+	app.db.Exec(`INSERT INTO topics (id, name, slug, path, parent_id, depth) VALUES ('t2', 'pasta', 'pasta', 'cooking/pasta', 't1', 1)`)
+	app.refreshTopicGraph()
+
+	req := httptest.NewRequest("GET", "/api/topics/tree", nil)
+	rec := httptest.NewRecorder()
+	app.handleGetTopicTree(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	tree := resp["tree"].([]interface{})
+	if len(tree) != 1 {
+		t.Fatalf("got %d roots, want 1", len(tree))
+	}
+	root := tree[0].(map[string]interface{})
+	if root["name"] != "cooking" {
+		t.Errorf("root name = %v, want cooking", root["name"])
+	}
+	children := root["children"].([]interface{})
+	if len(children) != 1 {
+		t.Fatalf("got %d children, want 1", len(children))
+	}
+	if children[0].(map[string]interface{})["name"] != "pasta" {
+		t.Errorf("child name = %v, want pasta", children[0].(map[string]interface{})["name"])
+	}
+}

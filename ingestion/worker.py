@@ -5,6 +5,7 @@ Processes video sources: download -> analyze -> split -> transcode -> transcribe
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -107,6 +108,94 @@ class Worker:
             whisper_kwargs["cpu_threads"] = WHISPER_THREADS
         self.whisper = WhisperModel(WHISPER_MODEL, **whisper_kwargs)
         self.kw_model = KeyBERT(model='all-MiniLM-L6-v2')
+        self._backfill_topic_graph()
+
+    @staticmethod
+    def _slugify(name: str) -> str:
+        slug = name.lower().strip()
+        slug = re.sub(r'[^a-z0-9\s-]', '', slug)
+        slug = re.sub(r'[\s-]+', '-', slug)
+        return slug.strip('-') or 'topic'
+
+    def _resolve_or_create_topic(self, db, name: str) -> str:
+        """Find or create a topic node within the current transaction, returning its ID."""
+        slug = self._slugify(name)
+        row = db.execute(
+            "SELECT id FROM topics WHERE slug = ? OR LOWER(name) = LOWER(?)",
+            (slug, name)
+        ).fetchone()
+        if row:
+            return row["id"]
+
+        topic_id = str(uuid.uuid4())
+        db.execute(
+            "INSERT OR IGNORE INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0)",
+            (topic_id, name, slug, slug)
+        )
+        row = db.execute("SELECT id FROM topics WHERE slug = ?", (slug,)).fetchone()
+        if row:
+            return row["id"]
+        return topic_id
+
+    def _backfill_topic_graph(self):
+        """One-time migration: seed topics table from existing clips.topics JSON arrays."""
+        db = open_db()
+        try:
+            existing = db.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
+            if existing > 0:
+                log.info(f"Topic graph already has {existing} nodes, skipping backfill")
+                return
+
+            rows = db.execute(
+                "SELECT id, topics FROM clips WHERE status = 'ready' AND topics != '[]'"
+            ).fetchall()
+
+            if not rows:
+                log.info("No clips to backfill topics from")
+                return
+
+            topic_ids = {}
+            clip_topic_pairs = []
+
+            for row in rows:
+                clip_id = row["id"]
+                try:
+                    topics = json.loads(row["topics"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                for name in topics:
+                    if not name:
+                        continue
+                    slug = self._slugify(name)
+                    if slug not in topic_ids:
+                        topic_ids[slug] = (str(uuid.uuid4()), name, slug)
+                    clip_topic_pairs.append((clip_id, topic_ids[slug][0]))
+
+            if not topic_ids:
+                return
+
+            db.execute("BEGIN IMMEDIATE")
+            for slug, (tid, name, slug) in topic_ids.items():
+                db.execute(
+                    "INSERT OR IGNORE INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0)",
+                    (tid, name, slug, slug)
+                )
+            for clip_id, topic_id in clip_topic_pairs:
+                db.execute(
+                    "INSERT OR IGNORE INTO clip_topics (clip_id, topic_id, confidence, source) VALUES (?, ?, 1.0, 'backfill')",
+                    (clip_id, topic_id)
+                )
+            db.execute("COMMIT")
+
+            log.info(f"Backfilled topic graph: {len(topic_ids)} topics, {len(clip_topic_pairs)} clip-topic links")
+        except Exception as e:
+            log.error(f"Topic backfill failed: {e}")
+            try:
+                db.execute("ROLLBACK")
+            except Exception:
+                pass
+        finally:
+            db.close()
 
     def _pop_job(self):
         """Atomically claim one pending job. Returns sqlite3.Row or None."""
@@ -567,6 +656,16 @@ class Worker:
                 clip_meta.get("width", 0), clip_meta.get("height", 0),
                 file_size, transcript, json.dumps(topics), content_score, expires_at,
             ))
+
+            for topic_name in topics:
+                try:
+                    topic_id = self._resolve_or_create_topic(db, topic_name)
+                    db.execute(
+                        "INSERT OR IGNORE INTO clip_topics (clip_id, topic_id, confidence, source) VALUES (?, ?, 1.0, 'keybert')",
+                        (clip_id, topic_id)
+                    )
+                except Exception as e:
+                    log.warning(f"Failed to link clip {clip_id} to topic {topic_name}: {e}")
 
             self._index_clip_fts(db, clip_id, title, transcript, platform, channel_name)
             db.execute("COMMIT")
