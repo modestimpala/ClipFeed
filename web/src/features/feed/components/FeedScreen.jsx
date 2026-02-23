@@ -5,6 +5,7 @@ import { ClipCard } from './ClipCard';
 export function FeedScreen() {
   const [clips, setClips] = useState([]);
   const [activeId, setActiveId] = useState(null);
+  const [isGlobalMuted, setIsGlobalMuted] = useState(true);
   const viewportRef = useRef(null);
   const cardRefs = useRef(new Map());
 
@@ -56,18 +57,27 @@ export function FeedScreen() {
     );
   }
 
+  const activeIndex = clips.findIndex(c => c.id === activeId);
+
   return (
     <div className="feed-container">
       <div className="feed-viewport" ref={viewportRef}>
-        {clips.map((clip) => (
-          <ClipCard
-            key={clip.id}
-            clip={clip}
-            isActive={clip.id === activeId}
-            onInteract={handleInteract}
-            ref={(el) => setCardRef(clip.id, el)}
-          />
-        ))}
+        {clips.map((clip, index) => {
+          const isNearActive = Math.abs(index - activeIndex) <= 1;
+
+          return (
+            <ClipCard
+              key={clip.id}
+              clip={clip}
+              isActive={clip.id === activeId}
+              shouldRenderVideo={isNearActive}
+              isMuted={isGlobalMuted}
+              onUnmute={() => setIsGlobalMuted(false)}
+              onInteract={handleInteract}
+              ref={(el) => setCardRef(clip.id, el)}
+            />
+          );
+        })}
       </div>
     </div>
   );

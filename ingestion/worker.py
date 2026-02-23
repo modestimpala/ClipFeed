@@ -44,6 +44,9 @@ TARGET_CLIP_SECONDS = 45
 SILENCE_NOISE_DB = -30
 SILENCE_MIN_DURATION = 0.5
 
+# Retry parameters
+RETRY_BASE_DELAY = 30  # seconds; doubles each attempt (30s, 60s, 120s, …)
+
 shutdown = False
 
 
@@ -98,6 +101,8 @@ class Worker:
                 WHERE id = (
                     SELECT id FROM jobs
                     WHERE status = 'queued'
+                      AND (run_after IS NULL
+                           OR run_after <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
                     ORDER BY priority DESC, created_at ASC
                     LIMIT 1
                 )
@@ -226,12 +231,39 @@ class Worker:
                 log.info(f"Job {job_id} complete: {len(clip_ids)} clips created")
 
             except Exception as e:
-                log.error(f"Job {job_id} failed: {e}")
-                db.execute(
-                    "UPDATE jobs SET status = 'failed', error = ? WHERE id = ?",
-                    (str(e), job_id),
-                )
-                db.execute("UPDATE sources SET status = 'failed' WHERE id = ?", (source_id,))
+                job_row = db.execute(
+                    "SELECT attempts, max_attempts FROM jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+                attempts = job_row["attempts"] if job_row else 0
+                max_attempts = job_row["max_attempts"] if job_row else 3
+
+                if attempts < max_attempts:
+                    delay = RETRY_BASE_DELAY * (2 ** (attempts - 1))
+                    run_after = (datetime.utcnow() + timedelta(seconds=delay)).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"
+                    )
+                    log.warning(
+                        f"Job {job_id} attempt {attempts}/{max_attempts} failed, "
+                        f"retrying in {delay}s: {e}"
+                    )
+                    db.execute(
+                        "UPDATE jobs SET status = 'queued', error = ?, run_after = ? WHERE id = ?",
+                        (str(e), run_after, job_id),
+                    )
+                    db.execute(
+                        "UPDATE sources SET status = 'pending' WHERE id = ?", (source_id,)
+                    )
+                else:
+                    log.error(
+                        f"Job {job_id} permanently failed after {attempts} attempts: {e}"
+                    )
+                    db.execute(
+                        "UPDATE jobs SET status = 'failed', error = ? WHERE id = ?",
+                        (str(e), job_id),
+                    )
+                    db.execute(
+                        "UPDATE sources SET status = 'failed' WHERE id = ?", (source_id,)
+                    )
 
             finally:
                 # Cleanup working directory

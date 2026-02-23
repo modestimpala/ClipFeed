@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { useInstallPrompt } from '../../../shared/hooks/useInstallPrompt';
 import { CookieSection } from './CookieSection';
 
 export function SettingsScreen({ onLogout }) {
+  const { canInstall, showIOSGuide, installed, promptInstall } = useInstallPrompt();
+
   const [prefs, setPrefs] = useState({
     exploration_rate: 0.3,
     min_clip_seconds: 5,
@@ -97,6 +100,26 @@ export function SettingsScreen({ onLogout }) {
               left: prefs.autoplay ? 23 : 3, transition: 'left 0.2s',
             }} />
           </button>
+        </div>
+
+        <div className="install-row">
+          <span className="install-row-label">Install App</span>
+          {installed ? (
+            <span className="install-row-badge">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Installed
+            </span>
+          ) : canInstall ? (
+            <button className="install-row-btn" onClick={promptInstall}>Install</button>
+          ) : showIOSGuide ? (
+            <span className="install-ios-hint">
+              Use Safari Share &rarr; Add to Home Screen
+            </span>
+          ) : (
+            <span className="install-ios-hint">Open in mobile browser</span>
+          )}
         </div>
 
         {onLogout && (

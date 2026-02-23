@@ -68,6 +68,8 @@ CREATE TABLE jobs (
     result TEXT DEFAULT '{}',
     error TEXT,
     attempts INTEGER DEFAULT 0,
+    max_attempts INTEGER DEFAULT 3,
+    run_after TEXT,
     created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 """
