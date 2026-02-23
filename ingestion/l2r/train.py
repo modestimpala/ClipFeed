@@ -10,8 +10,6 @@ from datetime import datetime, timezone
 
 import numpy as np
 from lightgbm import LGBMRanker
-from sklearn.model_selection import train_test_split
-
 from .features import FEATURE_NAMES, extract_features
 
 log = logging.getLogger(__name__)
@@ -81,8 +79,30 @@ def _ndcg_at_k(y_true: np.ndarray, y_score: np.ndarray, group_sizes: np.ndarray,
 def _split_by_groups(
     X: np.ndarray, y: np.ndarray, group_sizes: np.ndarray, test_size: float = 0.2, seed: int = 42
 ) -> tuple:
-    """Split data by whole groups (users) to avoid leakage."""
+    """
+    Split data by whole groups (users) to avoid leakage.
+
+    Single-user fallback: when n_groups == 1, a random group split is
+    impossible (100% lands in one bucket). Instead, do a chronological
+    time-series split — train on the first (1-test_size) interactions,
+    test on the remainder. The data from extract_features is already
+    ordered by (user_id, created_at), so temporal order is preserved.
+    """
     n_groups = len(group_sizes)
+
+    if n_groups <= 1:
+        n_samples = len(X)
+        split_idx = max(1, int(n_samples * (1 - test_size)))
+        split_idx = min(split_idx, n_samples - 1)
+        return (
+            X[:split_idx],
+            y[:split_idx],
+            np.array([split_idx], dtype=np.int32),
+            X[split_idx:],
+            y[split_idx:],
+            np.array([n_samples - split_idx], dtype=np.int32),
+        )
+
     rng = np.random.default_rng(seed)
     group_ids = np.arange(n_groups)
     rng.shuffle(group_ids)

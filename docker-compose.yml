@@ -119,8 +119,8 @@ services:
   # --- Content Scout Worker ---
   scout:
     build:
-      context: ./scout
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: scout/Dockerfile
     container_name: clipfeed-scout
     restart: unless-stopped
     depends_on:
@@ -129,10 +129,14 @@ services:
       DB_PATH: /data/clipfeed.db
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
-      SCOUT_INTERVAL: "${SCOUT_INTERVAL:-3600}"
+      SCOUT_INTERVAL: "${SCOUT_INTERVAL:-21600}"
       LLM_THRESHOLD: "${LLM_THRESHOLD:-6}"
     volumes:
       - db_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "${SCOUT_CPUS:-2}"
 
   # --- Reverse Proxy ---
   nginx:

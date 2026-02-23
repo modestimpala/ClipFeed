@@ -7,14 +7,13 @@ Discovers, monitors, and evaluates video content for ingestion.
 import json
 import logging
 import os
-import re
 import signal
 import sqlite3
 import subprocess
 import time
 import uuid
 
-import requests
+import ollama_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,17 +23,8 @@ log = logging.getLogger("scout")
 
 # Environment variables
 DB_PATH = os.getenv("DB_PATH", "/data/clipfeed.db")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
-SCOUT_INTERVAL = int(os.getenv("SCOUT_INTERVAL", "3600"))
+SCOUT_INTERVAL = int(os.getenv("SCOUT_INTERVAL", "21600"))
 LLM_THRESHOLD = float(os.getenv("LLM_THRESHOLD", "6"))
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "clipfeed")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "changeme123")
-MINIO_BUCKET = os.getenv("MINIO_BUCKET", "clips")
-
-OLLAMA_AVAILABILITY_TIMEOUT = 3
-OLLAMA_GENERATE_TIMEOUT = 30
 
 shutdown = False
 
@@ -57,64 +47,6 @@ def open_db():
     db.execute("PRAGMA foreign_keys=ON")
     db.row_factory = sqlite3.Row
     return db
-
-
-def _ollama_available() -> bool:
-    """Check if Ollama is reachable."""
-    try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=OLLAMA_AVAILABILITY_TIMEOUT)
-        r.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        log.debug("Ollama unavailable: %s", e)
-        return False
-
-
-def _ollama_evaluate(title: str, channel: str, top_topics: list) -> float:
-    """
-    Rate relevance 1-10 given user interests via Ollama.
-    Returns 0.0 on failure.
-    """
-    topics_str = ", ".join(str(t) for t in top_topics) if top_topics else "(none)"
-    prompt = (
-        f"Given these user interests: {topics_str}. "
-        f"Rate 1-10 how relevant this video is: '{title}' by '{channel}'. "
-        "Reply with just the number."
-    )
-    try:
-        r = requests.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"num_predict": 16},
-            },
-            timeout=OLLAMA_GENERATE_TIMEOUT,
-        )
-        r.raise_for_status()
-        data = r.json()
-        result = data.get("response", "").strip()
-    except requests.RequestException as e:
-        log.warning("Ollama generate failed: %s", e)
-        return 0.0
-    except (json.JSONDecodeError, KeyError) as e:
-        log.warning("Ollama response parse error: %s", e)
-        return 0.0
-
-    if not result:
-        return 0.0
-
-    match = re.search(r"(\d+(?:\.\d+)?)", result.strip())
-    if match:
-        try:
-            score = float(match.group(1))
-            return max(0.0, min(10.0, score))
-        except ValueError:
-            pass
-
-    log.warning("Could not parse LLM score from %r", result[:100])
-    return 0.0
 
 
 def check_sources(db: sqlite3.Connection) -> None:
@@ -253,7 +185,7 @@ def check_sources(db: sqlite3.Connection) -> None:
 
 def evaluate_candidates(db: sqlite3.Connection) -> None:
     """Score pending candidates via Ollama, set approved/rejected."""
-    if not _ollama_available():
+    if not ollama_client.is_available():
         log.info("Ollama unavailable, skipping candidate evaluation")
         return
 
@@ -275,7 +207,7 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
         title = row["title"] or ""
         channel = row["channel_name"] or ""
 
-        score = _ollama_evaluate(title, channel, top_topics)
+        score = ollama_client.evaluate_candidate(title, channel, top_topics)
         db.execute(
             "UPDATE scout_candidates SET llm_score = ? WHERE id = ?",
             (score, cand_id),
