@@ -18,8 +18,8 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
                           +---------+---------+
                           |         |         |
                     +-----++  +-----++  +-----++
-                    |Postgres| | Redis | | MinIO |
-                    | :5432  | | :6379 | | :9000 |
+                    |SQLite|  | SQLite|  | MinIO |
+                    | (WAL)|  | FTS5  |  | :9000 |
                     +--------+ +---+---+ +-------+
                                    |
                             +------+-------+
@@ -37,10 +37,9 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 | API | Go + Chi | REST API, auth, feed algorithm |
 | Frontend | React + Vite PWA | Mobile-first swipe feed |
 | Worker | Python | Video download, split, transcode, transcribe |
-| Database | PostgreSQL 16 | Users, clips, interactions, algorithm state |
-| Queue | Redis 7 | Job queue for async processing |
+| Database | SQLite | Users, clips, interactions, algorithm state, job queue |
 | Storage | MinIO | S3-compatible object storage for video files |
-| Search | Meilisearch | Full-text search across clips and transcripts |
+| Search | SQLite FTS5 | Full-text search across clips and transcripts |
 | Proxy | nginx | Reverse proxy, streaming optimization |
 
 ## Quick Start
@@ -89,12 +88,12 @@ Clips auto-expire after a configurable TTL (default 30 days). Saving/favoriting 
 
 Run the lifecycle script periodically:
 ```bash
-docker compose exec worker python /app/../scripts/lifecycle.py
+make lifecycle
 ```
 
 Or add to crontab:
 ```
-0 3 * * * cd /path/to/clipfeed && docker compose exec -T worker python /app/../scripts/lifecycle.py
+0 3 * * * cd /path/to/clipfeed && make lifecycle
 ```
 
 ## PWA Installation
