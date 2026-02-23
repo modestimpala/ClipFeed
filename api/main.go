@@ -955,7 +955,7 @@ func (a *App) handleAddToCollection(w http.ResponseWriter, r *http.Request) {
 		INSERT INTO collection_clips (collection_id, clip_id, position)
 		VALUES (?, ?, COALESCE((SELECT MAX(position) + 1 FROM collection_clips WHERE collection_id = ?), 0))
 		ON CONFLICT DO NOTHING
-	`, collectionID, req.ClipID)
+	`, collectionID, req.ClipID, collectionID)
 
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to add to collection"})
