@@ -28,9 +28,11 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		var id, jobType, status, createdAt string
 		var sourceID, errMsg, startedAt, completedAt, url, platform, title, channelName, thumbnailURL, externalID, sourceMetadata *string
 		var attempts, maxAttempts int
-		rows.Scan(&id, &sourceID, &jobType, &status, &errMsg,
+		if err := rows.Scan(&id, &sourceID, &jobType, &status, &errMsg,
 			&attempts, &maxAttempts, &startedAt, &completedAt, &createdAt,
-			&url, &platform, &title, &channelName, &thumbnailURL, &externalID, &sourceMetadata)
+			&url, &platform, &title, &channelName, &thumbnailURL, &externalID, &sourceMetadata); err != nil {
+			continue
+		}
 		var parsedSourceMetadata interface{} = nil
 		if sourceMetadata != nil && strings.TrimSpace(*sourceMetadata) != "" {
 			if err := json.Unmarshal([]byte(*sourceMetadata), &parsedSourceMetadata); err != nil {

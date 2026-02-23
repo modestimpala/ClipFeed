@@ -62,7 +62,10 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn.ExecContext(r.Context(), "COMMIT")
+	if _, err := conn.ExecContext(r.Context(), "COMMIT"); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to commit"})
+		return
+	}
 
 	writeJSON(w, 202, map[string]interface{}{
 		"source_id": sourceID,
