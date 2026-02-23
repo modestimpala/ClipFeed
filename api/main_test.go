@@ -492,7 +492,7 @@ func TestHandleFeed_FiltersProcessingClips(t *testing.T) {
 func TestHandleGetClip_Found(t *testing.T) {
 	app := newTestApp(t)
 	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('src6', 'http://x.com', 'direct')`)
-	app.db.Exec(`INSERT INTO clips (id, source_id, title, description, duration_seconds, storage_key, status) VALUES ('c4', 'src6', 'My Clip', '', 42.0, 'key', 'ready')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, title, description, duration_seconds, storage_key, thumbnail_key, status) VALUES ('c4', 'src6', 'My Clip', '', 42.0, 'key', '', 'ready')`)
 
 	req := httptest.NewRequest("GET", "/api/clips/c4", nil)
 	req = withChiParam(req, "id", "c4")
