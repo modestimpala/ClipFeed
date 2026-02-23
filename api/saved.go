@@ -26,9 +26,12 @@ func (a *App) handleUnsaveClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	clipID := chi.URLParam(r, "id")
 
-	a.db.ExecContext(r.Context(),
+	if _, err := a.db.ExecContext(r.Context(),
 		`DELETE FROM saved_clips WHERE user_id = ? AND clip_id = ?`,
-		userID, clipID)
+		userID, clipID); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to remove clip"})
+		return
+	}
 
 	writeJSON(w, 200, map[string]string{"status": "removed"})
 }
@@ -57,8 +60,10 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 		var id, title, thumbnailKey, topicsJSON, createdAt string
 		var duration float64
 		var platform, channelName, sourceURL *string
-		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &createdAt,
-			&platform, &channelName, &sourceURL)
+		if err := rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &createdAt,
+			&platform, &channelName, &sourceURL); err != nil {
+			continue
+		}
 		var topics []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		clips = append(clips, map[string]interface{}{
@@ -97,7 +102,9 @@ func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
 		var id, title, thumbnailKey, action string
 		var duration float64
 		var at string
-		rows.Scan(&id, &title, &duration, &thumbnailKey, &action, &at)
+		if err := rows.Scan(&id, &title, &duration, &thumbnailKey, &action, &at); err != nil {
+			continue
+		}
 		history = append(history, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
 			"thumbnail_key": thumbnailKey, "last_action": action, "at": at,

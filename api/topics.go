@@ -180,7 +180,9 @@ func (a *App) loadTopicGraph() *TopicGraph {
 	for rows.Next() {
 		var n TopicNode
 		var parentID sql.NullString
-		rows.Scan(&n.ID, &n.Name, &n.Slug, &n.Path, &parentID, &n.Depth, &n.ClipCount)
+		if err := rows.Scan(&n.ID, &n.Name, &n.Slug, &n.Path, &parentID, &n.Depth, &n.ClipCount); err != nil {
+			continue
+		}
 		if parentID.Valid {
 			n.ParentID = parentID.String
 		}
@@ -203,7 +205,9 @@ func (a *App) loadTopicGraph() *TopicGraph {
 	for edgeRows.Next() {
 		var sourceID, targetID, relation string
 		var weight float64
-		edgeRows.Scan(&sourceID, &targetID, &relation, &weight)
+		if err := edgeRows.Scan(&sourceID, &targetID, &relation, &weight); err != nil {
+			continue
+		}
 		g.edges[sourceID] = append(g.edges[sourceID], TopicEdge{
 			TargetID: targetID,
 			Relation: relation,
@@ -386,7 +390,9 @@ func (a *App) handleGetTopics(w http.ResponseWriter, r *http.Request) {
 			var id, name, slug, path string
 			var parentID sql.NullString
 			var depth, clipCount int
-			rows.Scan(&id, &name, &slug, &path, &parentID, &depth, &clipCount)
+			if err := rows.Scan(&id, &name, &slug, &path, &parentID, &depth, &clipCount); err != nil {
+				continue
+			}
 			t := map[string]interface{}{
 				"id": id, "name": name, "slug": slug,
 				"path": path, "depth": depth, "clip_count": clipCount,
@@ -418,7 +424,9 @@ func (a *App) handleGetTopicsLegacy(w http.ResponseWriter, r *http.Request) {
 	counts := make(map[string]int)
 	for rows.Next() {
 		var topicsJSON string
-		rows.Scan(&topicsJSON)
+		if err := rows.Scan(&topicsJSON); err != nil {
+			continue
+		}
 		var topics []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		for _, t := range topics {

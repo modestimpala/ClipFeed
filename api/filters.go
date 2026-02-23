@@ -79,7 +79,9 @@ func (a *App) handleListFilters(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var id, name, queryStr, createdAt string
 		var isDefault int
-		rows.Scan(&id, &name, &queryStr, &isDefault, &createdAt)
+		if err := rows.Scan(&id, &name, &queryStr, &isDefault, &createdAt); err != nil {
+			continue
+		}
 		filters = append(filters, map[string]interface{}{
 			"id": id, "name": name, "query": json.RawMessage(queryStr),
 			"is_default": isDefault == 1, "created_at": createdAt,
@@ -102,17 +104,26 @@ func (a *App) handleUpdateFilter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Name != "" {
-		a.db.ExecContext(r.Context(), `UPDATE saved_filters SET name = ? WHERE id = ? AND user_id = ?`, req.Name, filterID, userID)
+		if _, err := a.db.ExecContext(r.Context(), `UPDATE saved_filters SET name = ? WHERE id = ? AND user_id = ?`, req.Name, filterID, userID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "failed to update filter"})
+			return
+		}
 	}
 	if req.Query != nil {
-		a.db.ExecContext(r.Context(), `UPDATE saved_filters SET query = ? WHERE id = ? AND user_id = ?`, string(req.Query), filterID, userID)
+		if _, err := a.db.ExecContext(r.Context(), `UPDATE saved_filters SET query = ? WHERE id = ? AND user_id = ?`, string(req.Query), filterID, userID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "failed to update filter"})
+			return
+		}
 	}
 	if req.IsDefault != nil {
 		def := 0
 		if *req.IsDefault {
 			def = 1
 		}
-		a.db.ExecContext(r.Context(), `UPDATE saved_filters SET is_default = ? WHERE id = ? AND user_id = ?`, def, filterID, userID)
+		if _, err := a.db.ExecContext(r.Context(), `UPDATE saved_filters SET is_default = ? WHERE id = ? AND user_id = ?`, def, filterID, userID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "failed to update filter"})
+			return
+		}
 	}
 	writeJSON(w, 200, map[string]string{"status": "updated"})
 }
@@ -120,7 +131,10 @@ func (a *App) handleUpdateFilter(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleDeleteFilter(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	filterID := chi.URLParam(r, "id")
-	a.db.ExecContext(r.Context(), `DELETE FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID)
+	if _, err := a.db.ExecContext(r.Context(), `DELETE FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to delete filter"})
+		return
+	}
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
