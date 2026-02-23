@@ -13,7 +13,7 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 
 	var username, email, displayName, createdAt string
 	var avatarURL *string
-	var explorationRate float64
+	var explorationRate, scoutThreshold float64
 	var topicWeightsJSON string
 	var minClip, maxClip int
 	var autoplay int
@@ -24,12 +24,13 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(p.topic_weights, '{}'),
 		       COALESCE(p.min_clip_seconds, 5),
 		       COALESCE(p.max_clip_seconds, 120),
-		       COALESCE(p.autoplay, 1)
+		       COALESCE(p.autoplay, 1),
+		       COALESCE(p.scout_threshold, 6.0)
 		FROM users u
 		LEFT JOIN user_preferences p ON u.id = p.user_id
 		WHERE u.id = ?
 	`, userID).Scan(&username, &email, &displayName, &avatarURL, &createdAt,
-		&explorationRate, &topicWeightsJSON, &minClip, &maxClip, &autoplay)
+		&explorationRate, &topicWeightsJSON, &minClip, &maxClip, &autoplay, &scoutThreshold)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "user not found"})
@@ -52,6 +53,7 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 			"min_clip_seconds": minClip,
 			"max_clip_seconds": maxClip,
 			"autoplay":         autoplay == 1,
+			"scout_threshold":  scoutThreshold,
 		},
 	})
 }
@@ -68,14 +70,15 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	topicWeights, _ := json.Marshal(prefs["topic_weights"])
 
 	_, err := a.db.ExecContext(r.Context(), `
-		INSERT INTO user_preferences (user_id, exploration_rate, topic_weights, min_clip_seconds, max_clip_seconds, autoplay)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO user_preferences (user_id, exploration_rate, topic_weights, min_clip_seconds, max_clip_seconds, autoplay, scout_threshold)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
 			exploration_rate = COALESCE(excluded.exploration_rate, user_preferences.exploration_rate),
 			topic_weights    = COALESCE(excluded.topic_weights,    user_preferences.topic_weights),
 			min_clip_seconds = COALESCE(excluded.min_clip_seconds, user_preferences.min_clip_seconds),
 			max_clip_seconds = COALESCE(excluded.max_clip_seconds, user_preferences.max_clip_seconds),
 			autoplay         = COALESCE(excluded.autoplay,         user_preferences.autoplay),
+			scout_threshold  = COALESCE(excluded.scout_threshold,  user_preferences.scout_threshold),
 			updated_at       = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	`, userID,
 		prefs["exploration_rate"],
@@ -83,6 +86,7 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 		prefs["min_clip_seconds"],
 		prefs["max_clip_seconds"],
 		prefs["autoplay"],
+		prefs["scout_threshold"],
 	)
 
 	if err != nil {

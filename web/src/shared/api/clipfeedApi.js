@@ -44,4 +44,13 @@ export const api = {
 
   deleteCookie: (platform) =>
     request('DELETE', `/me/cookies/${platform}`),
+
+  // Scout
+  getScoutSources: () => request('GET', '/scout/sources'),
+  createScoutSource: ({ source_type, identifier, check_interval_hours }) =>
+    request('POST', '/scout/sources', { source_type, platform: 'youtube', identifier, check_interval_hours }),
+  updateScoutSource: (id, updates) => request('PATCH', `/scout/sources/${id}`, updates),
+  deleteScoutSource: (id) => request('DELETE', `/scout/sources/${id}`),
+  getScoutCandidates: (status) => request('GET', `/scout/candidates?status=${encodeURIComponent(status)}`),
+  approveCandidate: (id) => request('POST', `/scout/candidates/${id}/approve`),
 };
