@@ -20,31 +20,36 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
                     +-----++  +-----++  +-----++
                     |SQLite|  | SQLite|  | MinIO |
                     | (WAL)|  | FTS5  |  | :9000 |
-                    +--------+ +---+---+ +-------+
-                                   |
-              +--------------------+--------------------+
-              |                    |                    |
-       +------+-------+     +------+-------+     +------+-------+
-       |   Worker     |     |   Scout      |     |   Ollama     |
-       | yt-dlp       |     | Python       |     | Local LLM    |
-       | ffmpeg       |     +--------------+     +--------------+
-       | whisper      |
-       +--------------+
+                    +------+  +---+--+  +-------+
+                                  |
+              +-------------------+-------------------+
+              |                   |                   |
+       +------+-------+   +------+-------+   +-------+------+
+       |   Worker     |   | Score Updater|   |   Scout *    |
+       | yt-dlp       |   | (periodic)   |   | LLM-backed  |
+       | ffmpeg       |   +--------------+   +--------------+
+       | whisper      |                            |
+       +--------------+                      +-----+------+
+                                             |  Ollama *  |
+                                             | Local LLM  |
+                                             +------------+
+                                          * ai profile only
 ```
 
 ## Stack
 
 | Component | Tech | Purpose |
 |-----------|------|---------|
-| API | Go + Chi | REST API, auth, feed algorithm |
+| API | Go + Chi | REST API, auth, feed algorithm, search |
 | Frontend | React + Vite PWA | Mobile-first swipe feed |
-| Worker | Python | Video download, split, transcode, transcribe, score update |
-| Scout | Python | LLM-backed content scouting and discovery |
-| LLM | Ollama or API provider | Local or hosted model inference (summaries, scoring, topic/title assistance) |
-| Database | SQLite | Users, clips, interactions, algorithm state, job queue, topic graph |
-| Storage | MinIO | S3-compatible object storage for video files |
-| Search | SQLite FTS5 | Full-text search across clips and transcripts |
-| Proxy | nginx | Reverse proxy, streaming optimization |
+| Worker | Python | Video download, scene-split, transcode, transcribe |
+| Score Updater | Python | Periodic content score recalculation |
+| Scout | Python (ai profile) | LLM-backed content discovery and scoring |
+| LLM | Ollama or API provider (ai profile) | Local or hosted inference (summaries, scoring, scouting) |
+| Database | SQLite (WAL) | Single-connection DB: users, clips, interactions, jobs, topic graph, embeddings |
+| Storage | MinIO | S3-compatible object storage for video and thumbnail files |
+| Search | SQLite FTS5 | Full-text search across clip titles, transcripts, channels |
+| Proxy | nginx | Reverse proxy, SPA routing, streaming optimization |
 
 ## Quick Start
 
@@ -53,56 +58,58 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 cp .env.example .env
 # Edit .env with your secrets
 
-# Launch everything
+# Launch core services
 docker compose up -d
 
 # Watch logs
 docker compose logs -f worker
 ```
 
-**GPU Acceleration (Optional):**
-If you have a compatible GPU, you can use the GPU-optimized compose file to accelerate transcription, transcoding, and local LLM inference:
+**With AI features (Scout + Ollama):**
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+docker compose --profile ai up -d
+```
+
+**GPU Acceleration (requires NVIDIA Container Toolkit):**
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ai up -d
 ```
 
 The app will be available at `http://localhost`.
 
 ## Content Pipeline
 
-1. **Scouting:** The Scout worker uses the configured LLM provider to proactively discover and evaluate potential new content based on user interests.
-2. **Ingestion:** User or Scout submits a video URL (YouTube, Vimeo, TikTok, Instagram, etc.).
-3. **Processing:** Worker downloads via yt-dlp.
-4. **Segmentation:** ffmpeg detects scene changes and splits into 15-90s clips.
+1. **Scouting** *(ai profile)*: Scout worker discovers and evaluates candidate videos via LLM scoring.
+2. **Ingestion:** User submits a URL (or Scout auto-approves above threshold). Supports YouTube, Vimeo, TikTok, Instagram, etc.
+3. **Download:** Worker fetches via yt-dlp (with optional platform cookies for authenticated access).
+4. **Segmentation:** ffmpeg detects scene changes and splits into 15–90s clips.
 5. **Transcoding:** Each clip is transcoded to mobile-optimized mp4.
-6. **Transcription:** Whisper transcribes audio for search and topic extraction.
-7. **Embeddings & Topics:** Content is embedded and assigned to the topic graph.
-8. **Storage:** Clips are uploaded to MinIO and made available in the feed.
+6. **Transcription:** faster-whisper transcribes audio for search and topic extraction.
+7. **Embeddings & Topics:** sentence-transformers generates embeddings; KeyBERT extracts topics and maps them into the topic graph.
+8. **Storage:** Clips and thumbnails upload to MinIO; metadata writes to SQLite.
+9. **Scoring:** Score Updater periodically recalculates `content_score` from aggregate interactions.
 
 ## Algorithm
 
 The feed algorithm is fully transparent and user-controllable:
 
-- **Exploration Rate** (0-100%): Controls the balance between showing content similar to what you've liked vs discovering new topics. At 0% you get a pure comfort zone feed, at 100% everything is random discovery.
-- **Clip Duration Bounds**: Set minimum and maximum clip lengths you want to see.
-- **Topic Weights**: Explicit per-topic interest sliders allowing you to boost or hide specific topics.
+- **Exploration Rate** (0–100%): Balance between engagement-optimized and random discovery.
+- **Clip Duration Bounds**: Minimum and maximum clip lengths.
+- **Topic Weights**: Per-topic interest sliders to boost or suppress topics.
+- **Saved Filters**: Reusable named filter presets.
 
-The algorithm combines:
-- Embedding-driven ranking (L2R - Learning to Rank)
-- Topic Graph for semantic discovery and backfilling
-- Content score (predicted engagement based on aggregate interactions)
-- User preference matching (topics, duration, source)
-- Controlled randomness (scaled by exploration rate)
-- Recency bias (recent content weighted slightly higher)
-- Deduplication (seen clips in last 24h are filtered)
+The ranking pipeline:
+1. SQLite initial sort: `content_score * (1 - exploration_rate) + random * exploration_rate`
+2. Topic weight multipliers from user preferences
+3. Embedding-based L2R rescoring (cosine similarity of float32 blobs)
+4. 24-hour deduplication of recently seen clips
 
 ## Storage Lifecycle
 
-Clips auto-expire after a configurable TTL (default 30 days). Saving/favoriting a clip protects it from deletion. When storage exceeds the configured limit, the oldest unprotected clips are evicted first.
+Clips auto-expire after a configurable TTL (default 30 days). Saving or favoriting a clip sets `is_protected = 1` (via trigger), exempting it from eviction.
 
-Run the lifecycle script periodically:
 ```bash
-make lifecycle
+make lifecycle          # run manually
 ```
 
 Or add to crontab:
@@ -113,69 +120,124 @@ Or add to crontab:
 ## PWA Installation
 
 The frontend is a Progressive Web App. On mobile:
-- **Android**: Chrome menu -> "Add to Home Screen" (installs like a native app)
-- **iOS**: Safari share button -> "Add to Home Screen"
+- **Android**: Chrome menu → "Add to Home Screen"
+- **iOS**: Safari share → "Add to Home Screen"
 
-No app store needed. For actual native builds later, Capacitor can wrap the same codebase.
+No app store needed.
 
 ## API Endpoints
+
+### Public
+- `GET  /health` - Health check
+- `GET  /api/config` - Client configuration flags
 
 ### Auth
 - `POST /api/auth/register` - Create account
 - `POST /api/auth/login` - Sign in
 
-### Feed
-- `GET /api/feed` - Get personalized feed (or anonymous)
-- `GET /api/clips/:id` - Get clip details
-- `GET /api/clips/:id/stream` - Get streaming URL
-- `GET /api/topics` - Get top topics
+### Feed & Discovery
+- `GET  /api/feed` - Personalized feed (supports anonymous access)
+- `GET  /api/clips/:id` - Clip details
+- `GET  /api/clips/:id/stream` - Presigned streaming URL
+- `GET  /api/clips/:id/similar` - Similar clips (embedding-based)
+- `GET  /api/clips/:id/summary` - LLM-generated clip summary
+- `GET  /api/search` - Full-text search (FTS5)
+- `GET  /api/topics` - Top topics
+- `GET  /api/topics/tree` - Hierarchical topic graph
 
-### Interactions
-- `POST /api/clips/:id/interact` - Record interaction (view, like, skip, etc.)
-- `POST /api/clips/:id/save` - Save/favorite clip
+### Interactions (auth required)
+- `POST   /api/clips/:id/interact` - Record interaction (view, like, skip, etc.)
+- `POST   /api/clips/:id/save` - Save/favorite clip
 - `DELETE /api/clips/:id/save` - Unsave clip
 
-### Ingestion
+### Ingestion (auth required)
 - `POST /api/ingest` - Submit URL for processing
-- `GET /api/jobs` - List processing jobs
-- `GET /api/jobs/:id` - Get job details
+- `GET  /api/jobs` - List processing jobs
+- `GET  /api/jobs/:id` - Job details
 
-### User
-- `GET /api/me` - Get profile (includes preferences and topic weights)
-- `PUT /api/me/preferences` - Update algorithm preferences
-- `GET /api/me/saved` - List saved clips
-- `GET /api/me/history` - View watch history
+### User Profile (auth required)
+- `GET  /api/me` - Profile with preferences and topic weights
+- `PUT  /api/me/preferences` - Update algorithm preferences
+- `GET  /api/me/saved` - Saved clips
+- `GET  /api/me/history` - Watch history
 
-### Collections
-- `POST /api/collections` - Create collection
-- `GET /api/collections` - List collections
-- `POST /api/collections/:id/clips` - Add clip to collection
-- `DELETE /api/collections/:id/clips/:clipId` - Remove from collection
+### Cookies (auth required)
+- `GET    /api/me/cookies` - List cookie status per platform
+- `PUT    /api/me/cookies/:platform` - Set platform cookie (for yt-dlp auth)
+- `DELETE /api/me/cookies/:platform` - Remove platform cookie
+
+### Collections (auth required)
+- `POST   /api/collections` - Create collection
+- `GET    /api/collections` - List collections
+- `GET    /api/collections/:id/clips` - List clips in collection
+- `POST   /api/collections/:id/clips` - Add clip to collection
+- `DELETE /api/collections/:id/clips/:clipId` - Remove clip from collection
+- `DELETE /api/collections/:id` - Delete collection
+
+### Filters (auth required)
+- `POST   /api/filters` - Create saved filter
+- `GET    /api/filters` - List saved filters
+- `PUT    /api/filters/:id` - Update filter
+- `DELETE /api/filters/:id` - Delete filter
+
+### Scout (auth required)
+- `POST   /api/scout/sources` - Add scout source (channel/playlist)
+- `GET    /api/scout/sources` - List scout sources
+- `PATCH  /api/scout/sources/:id` - Update scout source
+- `DELETE /api/scout/sources/:id` - Delete scout source
+- `POST   /api/scout/sources/:id/trigger` - Force immediate check
+- `GET    /api/scout/candidates` - List discovered candidates
+- `POST   /api/scout/candidates/:id/approve` - Approve candidate for ingestion
 
 ## Development
 
+All builds and tests run inside Docker — do not run Go, npm, or Python on the host.
+
 ```bash
-# API (Go)
-cd api && go run .
+# Rebuild a single service after changes
+docker compose up -d --build api        # Go API
+docker compose up -d --build web        # frontend
+docker compose up -d --build worker     # ingestion worker
+docker compose up -d --build scout      # scout worker
 
-# Worker (Python)
-cd ingestion && pip install -r requirements.txt && python worker.py
+# Run API tests
+make test-api-docker
 
-# Frontend (React)
-cd web && npm install && npm run dev
+# Useful make targets
+make up                   # start all services
+make down                 # stop all services
+make ai-up                # start with ai profile (Scout + Ollama)
+make ai-down              # stop ai profile
+make gpu-up               # GPU-accelerated stack
+make gpu-down
+make logs-api             # tail API logs
+make logs-worker          # tail worker logs
+make shell-db             # sqlite3 shell into the database
+make lifecycle            # expire old clips
+make score                # trigger score update
+make clean                # stop + remove volumes
 ```
 
 ## LLM Provider Configuration
 
-- Default (local): `LLM_PROVIDER=ollama` with internal Ollama service.
-- Hosted API: set `LLM_PROVIDER=openai`, `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
-- Anthropic: set `LLM_PROVIDER=anthropic`, `LLM_BASE_URL=https://api.anthropic.com/v1`, `LLM_API_KEY` (or `ANTHROPIC_API_KEY`), and `LLM_MODEL`.
-- Python workers route provider calls through LiteLLM.
-- OpenAI-compatible endpoints are supported (for example OpenAI and compatible gateways).
+Scout, clip summaries, and AI-assisted features require an LLM. Two modes:
+
+| Setting | Local (default) | Hosted API |
+|---------|----------------|------------|
+| `LLM_PROVIDER` | `ollama` | `openai` or `anthropic` |
+| `LLM_BASE_URL` | *(auto: internal Ollama)* | API endpoint URL |
+| `LLM_API_KEY` | *(not needed)* | Your API key |
+| `LLM_MODEL` | *(uses `OLLAMA_MODEL`)* | Model name |
+
+- Set `ENABLE_AI=true` (automatic with GPU compose or `--profile ai`).
+- Python workers route calls through LiteLLM; any OpenAI-compatible endpoint works.
+- Anthropic: set `LLM_BASE_URL=https://api.anthropic.com/v1`.
 
 ## Roadmap
 
-- [x] Phase 1: Core pipeline - ingest, split, serve, basic feed
-- [x] Phase 2: Algorithm engine - topic extraction, collaborative filtering, preference UI, L2R embeddings
-- [ ] Phase 3: Polish - HLS adaptive streaming, search, refined UI
-- [ ] Phase 4: Multi-source (Reels/TikTok via cookies), federation
+- [x] Phase 1: Core pipeline — ingest, split, serve, basic feed
+- [x] Phase 2: Algorithm engine — topic graph, L2R embeddings, preference UI, collections
+- [x] Phase 3: Search (FTS5), saved filters, platform cookies, clip summaries, Scout
+- [x] Phase 4: Multi-user (auth, per-user preferences/embeddings/collections)
+
+ Possible Features: Sharing, federation, public collections?

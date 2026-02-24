@@ -34,19 +34,18 @@ export const ClipCard = React.forwardRef(function ClipCard({
   isActive, 
   shouldRenderVideo,
   isMuted,
-  onUnmute,
+  onToggleMute,
   onInteract 
 }, ref) {
   const videoRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [liked, setLiked] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [liked, setLiked] = useState(!!clip?.is_liked);
+  const [saved, setSaved] = useState(!!clip?.is_saved);
   const [streamUrl, setStreamUrl] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
   const startTimeRef = useRef(null);
-  const longPressRef = useRef(null);
 
   // Fetch stream URL — use cached blob instantly, otherwise stream directly
   useEffect(() => {
@@ -137,11 +136,6 @@ export const ClipCard = React.forwardRef(function ClipCard({
     const video = videoRef.current;
     if (!video) return;
 
-    if (isMuted) {
-      onUnmute();
-      return;
-    }
-
     if (video.paused) {
       video.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
     } else {
@@ -162,36 +156,6 @@ export const ClipCard = React.forwardRef(function ClipCard({
     setSaved(willSave);
     if (willSave) api.saveClip(clip.id).catch(() => setSaved(false));
     else api.unsaveClip(clip.id).catch(() => setSaved(true));
-  }
-
-  function handleSavePointerDown(e) {
-    e.stopPropagation();
-    longPressRef.current = setTimeout(() => {
-      longPressRef.current = 'fired';
-      // Save first if not already saved
-      if (!saved) {
-        setSaved(true);
-        api.saveClip(clip.id).catch(() => setSaved(false));
-      }
-      setShowCollections(true);
-    }, 500);
-  }
-
-  function handleSavePointerUp(e) {
-    e.stopPropagation();
-    if (longPressRef.current === 'fired') {
-      longPressRef.current = null;
-      return; // long press handled it
-    }
-    clearTimeout(longPressRef.current);
-    longPressRef.current = null;
-    handleSave(e);
-  }
-
-  function handleSavePointerCancel(e) {
-    e.stopPropagation();
-    if (longPressRef.current !== 'fired') clearTimeout(longPressRef.current);
-    longPressRef.current = null;
   }
 
   const handleToggleInfo = useCallback((e) => {
@@ -224,16 +188,12 @@ export const ClipCard = React.forwardRef(function ClipCard({
           poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
         />
       ) : (
-        <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000' }} />
+        <div className="video-placeholder" />
       )}
 
       {isActive && isMuted && (
-        <div className="unmute-overlay" style={{
-          position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
-          background: 'rgba(0,0,0,0.6)', padding: '12px 24px', borderRadius: '30px',
-          color: 'white', fontWeight: 'bold', pointerEvents: 'none', zIndex: 10
-        }}>
-          Tap to Unmute
+        <div className="unmute-hint">
+          <Icons.VolumeX />
         </div>
       )}
 
@@ -249,18 +209,29 @@ export const ClipCard = React.forwardRef(function ClipCard({
       </div>
 
       <div className="clip-actions">
-        <button className={`action-btn ${liked ? 'active' : ''}`} onClick={handleLike}><Icons.Heart filled={liked} /></button>
         <button
-          className={`action-btn ${saved ? 'active' : ''}`}
-          onPointerDown={handleSavePointerDown}
-          onPointerUp={handleSavePointerUp}
-          onPointerCancel={handleSavePointerCancel}
-          onContextMenu={(e) => e.preventDefault()}
-        ><Icons.Bookmark filled={saved} /></button>
-        <button className="action-btn" onClick={(e) => { e.stopPropagation(); setShowCollections(true); }}><Icons.FolderPlus /></button>
-        <button className={`action-btn ${showInfo ? 'active' : ''}`} onClick={handleToggleInfo}><Icons.Info /></button>
+          className="action-btn"
+          onClick={(e) => { e.stopPropagation(); onToggleMute(); }}
+          aria-label={isMuted ? 'Unmute' : 'Mute'}
+        >
+          {isMuted ? <Icons.VolumeX /> : <Icons.Volume2 />}
+        </button>
+        <button className={`action-btn ${liked ? 'active' : ''}`} onClick={handleLike} aria-label={liked ? 'Unlike' : 'Like'}>
+          <Icons.Heart filled={liked} />
+        </button>
+        <button className={`action-btn ${saved ? 'active' : ''}`} onClick={handleSave} aria-label={saved ? 'Unsave' : 'Save'}>
+          <Icons.Bookmark filled={saved} />
+        </button>
+        <button className="action-btn" onClick={(e) => { e.stopPropagation(); setShowCollections(true); }} aria-label="Add to collection">
+          <Icons.FolderPlus />
+        </button>
+        <button className={`action-btn ${showInfo ? 'active' : ''}`} onClick={handleToggleInfo} aria-label="Clip details">
+          <Icons.Info />
+        </button>
         {clip.source_url && (
-          <button className="action-btn" onClick={handleOpenSource}><Icons.ExternalLink /></button>
+          <button className="action-btn" onClick={handleOpenSource} aria-label="Open source">
+            <Icons.ExternalLink />
+          </button>
         )}
       </div>
 

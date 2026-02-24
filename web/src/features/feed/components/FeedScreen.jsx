@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { Icons } from '../../../shared/ui/icons';
 import { videoCache } from '../../../shared/utils/videoCache';
 import { ClipCard } from './ClipCard';
 
@@ -7,16 +8,25 @@ export function FeedScreen() {
   const [clips, setClips] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [isGlobalMuted, setIsGlobalMuted] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const viewportRef = useRef(null);
   const cardRefs = useRef(new Map());
 
-  useEffect(() => {
+  const loadFeed = useCallback(() => {
+    setLoading(true);
+    setError(null);
     api.getFeed().then((data) => {
       const loaded = data.clips || [];
       setClips(loaded);
-      if (loaded.length > 0) setActiveId(loaded[0].id);
-    }).catch(console.error);
+      if (loaded.length > 0) setActiveId(String(loaded[0].id));
+    }).catch((err) => {
+      console.error(err);
+      setError('Failed to load feed');
+    }).finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => { loadFeed(); }, [loadFeed]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -26,7 +36,7 @@ export function FeedScreen() {
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
-            setActiveId(entry.target.dataset.clipId);
+            setActiveId(String(entry.target.dataset.clipId));
           }
         }
       },
@@ -49,7 +59,9 @@ export function FeedScreen() {
     if (api.getToken()) api.interact(clipId, action, duration, percentage).catch(() => {});
   }
 
-  const activeIndex = clips.findIndex(c => c.id === activeId);
+  const handleToggleMute = useCallback(() => setIsGlobalMuted(m => !m), []);
+
+  const activeIndex = clips.findIndex(c => String(c.id) === activeId);
 
   // Preload upcoming videos into blob cache
   useEffect(() => {
@@ -67,6 +79,24 @@ export function FeedScreen() {
     }
   }, [activeIndex, clips]);
 
+  if (loading) {
+    return (
+      <div className="feed-loading">
+        <div className="feed-spinner" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="empty-state">
+        <h2>Something went wrong</h2>
+        <p>{error}</p>
+        <button className="feed-retry-btn" onClick={loadFeed}>Retry</button>
+      </div>
+    );
+  }
+
   if (!clips.length) {
     return (
       <div className="empty-state">
@@ -78,6 +108,9 @@ export function FeedScreen() {
 
   return (
     <div className="feed-container">
+      <button className="feed-refresh-btn" onClick={loadFeed} aria-label="Refresh feed">
+        <Icons.RefreshCw />
+      </button>
       <div className="feed-viewport" ref={viewportRef}>
         {clips.map((clip, index) => {
           // Render video for active card and ±1 neighbors so iOS decoders stay warm
@@ -87,11 +120,10 @@ export function FeedScreen() {
             <ClipCard
               key={clip.id}
               clip={clip}
-              isActive={clip.id === activeId}
+              isActive={String(clip.id) === activeId}
               shouldRenderVideo={isNearActive}
               isMuted={isGlobalMuted}
-              onUnmute={() => setIsGlobalMuted(false)}
-              onRequireMute={() => setIsGlobalMuted(true)}
+              onToggleMute={handleToggleMute}
               onInteract={handleInteract}
               ref={(el) => setCardRef(clip.id, el)}
             />
