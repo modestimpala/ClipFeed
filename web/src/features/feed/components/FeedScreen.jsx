@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { videoCache } from '../../../shared/utils/videoCache';
 import { ClipCard } from './ClipCard';
 
 export function FeedScreen() {
@@ -48,6 +49,21 @@ export function FeedScreen() {
     if (api.getToken()) api.interact(clipId, action, duration, percentage).catch(() => {});
   }
 
+  const activeIndex = clips.findIndex(c => c.id === activeId);
+
+  // Preload upcoming videos into blob cache
+  useEffect(() => {
+    if (clips.length === 0 || activeIndex === -1) return;
+    for (let i = 1; i <= 2; i++) {
+      const next = clips[activeIndex + i];
+      if (next) {
+        api.getStreamUrl(next.id)
+          .then(data => { if (data?.url) videoCache.preload(next.id, data.url); })
+          .catch(() => {});
+      }
+    }
+  }, [activeIndex, clips]);
+
   if (!clips.length) {
     return (
       <div className="empty-state">
@@ -56,8 +72,6 @@ export function FeedScreen() {
       </div>
     );
   }
-
-  const activeIndex = clips.findIndex(c => c.id === activeId);
 
   return (
     <div className="feed-container">

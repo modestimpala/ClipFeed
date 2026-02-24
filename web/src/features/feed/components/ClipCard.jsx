@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
+import { videoCache } from '../../../shared/utils/videoCache';
 
 function formatDuration(s) {
   const m = Math.floor(s / 60);
@@ -45,13 +46,32 @@ export const ClipCard = React.forwardRef(function ClipCard({
   const [showInfo, setShowInfo] = useState(false);
   const startTimeRef = useRef(null);
 
-  // Fetch stream URL
+  // Fetch stream URL — use cached blob instantly, otherwise stream immediately
+  // and kick off a background blob fetch for next time
   useEffect(() => {
     if (!shouldRenderVideo || !clip) return;
     let cancelled = false;
-    api.getStreamUrl(clip.id).then((data) => {
-      if (!cancelled) setStreamUrl(data.url);
-    }).catch(() => {});
+
+    // Check blob cache first (instant if preloaded)
+    const cached = videoCache.getCachedUrl(clip.id);
+    if (cached) {
+      setStreamUrl(cached);
+      return;
+    }
+
+    // Not cached — fetch the presigned URL and use it for immediate streaming
+    api.getStreamUrl(clip.id)
+      .then((data) => {
+        if (cancelled || !data.url) return;
+        // Set the network URL right away so playback starts immediately
+        setStreamUrl(data.url);
+        // Background: download the blob for future instant playback
+        videoCache.fetchAndCache(clip.id, data.url).then((blobUrl) => {
+          if (!cancelled && blobUrl) setStreamUrl(blobUrl);
+        });
+      })
+      .catch(() => {});
+
     return () => { cancelled = true; };
   }, [clip?.id, shouldRenderVideo]);
 
