@@ -69,9 +69,21 @@ func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var payload, result interface{}
+	if json.Valid([]byte(payloadStr)) {
+		payload = json.RawMessage(payloadStr)
+	} else {
+		payload = payloadStr
+	}
+	if json.Valid([]byte(resultStr)) {
+		result = json.RawMessage(resultStr)
+	} else {
+		result = resultStr
+	}
+
 	writeJSON(w, 200, map[string]interface{}{
 		"id": id, "source_id": sourceID, "job_type": jobType,
-		"status": status, "payload": json.RawMessage(payloadStr),
-		"result": json.RawMessage(resultStr), "error": errMsg, "created_at": createdAt,
+		"status": status, "payload": payload,
+		"result": result, "error": errMsg, "created_at": createdAt,
 	})
 }

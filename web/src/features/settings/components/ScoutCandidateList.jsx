@@ -103,7 +103,7 @@ export function ScoutCandidateList() {
             <div
               key={c.id}
               className="scout-candidate-card"
-              onClick={() => c.url && window.open(c.url, '_blank', 'noopener')}
+              onClick={() => c.url && window.open(c.url, '_blank', 'noopener,noreferrer')}
             >
               <div className="scout-candidate-info">
                 <div className="scout-candidate-title">{truncate(c.title, 60)}</div>

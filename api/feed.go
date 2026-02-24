@@ -29,7 +29,9 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			 FROM user_preferences WHERE user_id = ?`,
 			userID,
 		).Scan(&topicWeightsJSON, &dedupeSeen24hRaw, &diversityMix, &trendingBoost, &freshnessBias); err == nil {
-			json.Unmarshal([]byte(topicWeightsJSON), &topicWeights)
+			if err := json.Unmarshal([]byte(topicWeightsJSON), &topicWeights); err != nil {
+				topicWeights = nil
+			}
 			dedupeSeen24h = dedupeSeen24hRaw == 1
 			feedPrefs.DiversityMix = diversityMix
 			feedPrefs.TrendingBoost = trendingBoost == 1

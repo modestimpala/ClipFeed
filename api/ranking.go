@@ -203,7 +203,7 @@ func (a *App) applyDiversityPenalty(clips []map[string]interface{}, diversityMix
 		bestScore := -1.0
 
 		for j, clip := range candidates {
-			score := clip["_div_score"].(float64)
+			score, _ := clip["_div_score"].(float64)
 
 			topicPenalty := 1.0
 			if topics, ok := clip["topics"].([]string); ok {
@@ -297,7 +297,9 @@ func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interfa
 	for rows.Next() {
 		var cid string
 		var count float64
-		rows.Scan(&cid, &count)
+		if err := rows.Scan(&cid, &count); err != nil {
+			continue
+		}
 		velocity[cid] = count
 	}
 
@@ -612,7 +614,9 @@ func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
 		var title string
 		var thumbKey string
 		var dur, cs float64
-		rows.Scan(&cid, &tBlob, &vBlob, &title, &thumbKey, &dur, &cs)
+		if err := rows.Scan(&cid, &tBlob, &vBlob, &title, &thumbKey, &dur, &cs); err != nil {
+			continue
+		}
 
 		textSim := 0.0
 		visualSim := 0.0
