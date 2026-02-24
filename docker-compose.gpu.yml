@@ -18,3 +18,14 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  ollama:
+    deploy:
+      resources:
+        limits:
+          cpus: "${OLLAMA_CPUS:-4}"
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

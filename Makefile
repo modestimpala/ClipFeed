@@ -1,4 +1,7 @@
-.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score test-api-docker clean
+.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score test-api-docker clean \
+       gpu-up gpu-down gpu-build gpu-logs gpu-logs-worker gpu-logs-api
+
+GPU_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.gpu.yml
 
 up:
 	docker compose up -d
@@ -17,6 +20,24 @@ logs-worker:
 
 logs-api:
 	docker compose logs -f api
+
+gpu-up:
+	$(GPU_COMPOSE) up -d
+
+gpu-down:
+	$(GPU_COMPOSE) down
+
+gpu-build:
+	$(GPU_COMPOSE) build --no-cache
+
+gpu-logs:
+	$(GPU_COMPOSE) logs -f
+
+gpu-logs-worker:
+	$(GPU_COMPOSE) logs -f worker
+
+gpu-logs-api:
+	$(GPU_COMPOSE) logs -f api
 
 shell-api:
 	docker compose exec api sh

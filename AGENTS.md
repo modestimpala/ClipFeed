@@ -36,13 +36,29 @@ When changing behavior, keep edits scoped to the relevant layer and avoid cross-
 
 ## Verification Commands
 
-Run the narrowest useful checks for touched areas:
+**Always verify through Docker** — do NOT run `go`, `npm`, or `python` directly on the host. The local machine may not have the correct toolchains installed.
 
-- API: `cd api && go test ./...`
-- Worker: `cd ingestion && python -m py_compile worker.py`
-- Frontend: `cd web && npm run build`
+Rebuild only the service(s) you changed, then restart them:
 
-If a command cannot be run locally, state that clearly and explain what remains unverified.
+```bash
+# Rebuild + restart a single service (fast, targeted)
+docker compose up -d --build api       # after Go changes
+docker compose up -d --build web       # after frontend changes
+docker compose up -d --build worker    # after ingestion changes
+docker compose up -d --build scout     # after scout changes
+
+# Check logs for errors after restart
+docker compose logs -f api
+docker compose logs -f web
+```
+
+For API tests, run them inside the container:
+
+```bash
+make test-api-docker
+```
+
+Do NOT use `make build` (rebuilds everything from scratch). Only rebuild the specific service you touched.
 
 ## Safety and Secrets
 
