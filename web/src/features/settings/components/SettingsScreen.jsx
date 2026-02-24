@@ -48,7 +48,7 @@ export function SettingsScreen({ onLogout }) {
 
   return (
     <div className="settings-screen">
-      <div className="settings-title">Algorithm Controls</div>
+      <div className="settings-title">Settings</div>
 
       <div className="settings-section">
         <h3>Feed Tuning</h3>
@@ -66,7 +66,7 @@ export function SettingsScreen({ onLogout }) {
             value={prefs.exploration_rate}
             onChange={(e) => handleChange('exploration_rate', parseFloat(e.target.value))}
           />
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+          <div className="slider-hint-row">
             <span>More of what I like</span>
             <span>Surprise me</span>
           </div>
@@ -105,18 +105,10 @@ export function SettingsScreen({ onLogout }) {
         <div className="setting-row">
           <span className="setting-label">Hide clips seen in last 24h</span>
           <button
-            style={{
-              background: prefs.dedupe_seen_24h ? 'var(--accent)' : 'var(--bg-surface)',
-              border: 'none', borderRadius: 12, width: 44, height: 24, cursor: 'pointer',
-              position: 'relative', transition: 'background 0.2s',
-            }}
+            className={`toggle-switch ${prefs.dedupe_seen_24h ? 'on' : ''}`}
             onClick={() => handleChange('dedupe_seen_24h', !prefs.dedupe_seen_24h)}
           >
-            <div style={{
-              width: 18, height: 18, borderRadius: '50%', background: 'white',
-              position: 'absolute', top: 3,
-              left: prefs.dedupe_seen_24h ? 23 : 3, transition: 'left 0.2s',
-            }} />
+            <div className="toggle-knob" />
           </button>
         </div>
       </div>
@@ -144,25 +136,20 @@ export function SettingsScreen({ onLogout }) {
       {api.getToken() && <CookieSection />}
 
       <div className="settings-section">
-        <h3>Account</h3>
+        <h3>Playback</h3>
         <div className="setting-row">
           <span className="setting-label">Autoplay</span>
           <button
-            style={{
-              background: prefs.autoplay ? 'var(--accent)' : 'var(--bg-surface)',
-              border: 'none', borderRadius: 12, width: 44, height: 24, cursor: 'pointer',
-              position: 'relative', transition: 'background 0.2s',
-            }}
+            className={`toggle-switch ${prefs.autoplay ? 'on' : ''}`}
             onClick={() => handleChange('autoplay', !prefs.autoplay)}
           >
-            <div style={{
-              width: 18, height: 18, borderRadius: '50%', background: 'white',
-              position: 'absolute', top: 3,
-              left: prefs.autoplay ? 23 : 3, transition: 'left 0.2s',
-            }} />
+            <div className="toggle-knob" />
           </button>
         </div>
+      </div>
 
+      <div className="settings-section">
+        <h3>App</h3>
         <div className="install-row">
           <span className="install-row-label">Install App</span>
           {installed ? (
@@ -184,15 +171,7 @@ export function SettingsScreen({ onLogout }) {
         </div>
 
         {onLogout && (
-          <button
-            style={{
-              width: '100%', padding: 14, background: 'var(--bg-surface)',
-              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-              color: 'var(--accent)', fontFamily: 'var(--font)', fontSize: 15,
-              fontWeight: 500, cursor: 'pointer', marginTop: 8,
-            }}
-            onClick={onLogout}
-          >
+          <button className="sign-out-btn" onClick={onLogout}>
             Sign Out
           </button>
         )}

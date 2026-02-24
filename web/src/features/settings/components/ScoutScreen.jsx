@@ -68,7 +68,7 @@ export function ScoutScreen({ onBack, threshold, onThresholdChange }) {
                 value={threshold}
                 onChange={(e) => onThresholdChange(parseFloat(e.target.value))}
               />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>
+              <div className="slider-hint-row">
                 <span>Ingest everything</span>
                 <span>Only the best</span>
               </div>
