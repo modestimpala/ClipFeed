@@ -48,6 +48,8 @@ export const api = {
   deleteCookie: (platform) =>
     request('DELETE', `/me/cookies/${platform}`),
 
+  getConfig: () => request('GET', '/config'),
+
   // Scout
   getScoutSources: () => request('GET', '/scout/sources'),
   createScoutSource: ({ source_type, identifier, check_interval_hours }) =>

@@ -44,6 +44,7 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
       - db_data:/data
     ports:
@@ -78,6 +79,7 @@ services:
       LLM_API_KEY: ${LLM_API_KEY:-}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
       - db_data:/data
       - worker_tmp:/tmp/clipfeed
@@ -116,6 +118,7 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: clipfeed-ollama
+    profiles: ["ai"]
     restart: unless-stopped
     volumes:
       - ollama_data:/root/.ollama
@@ -132,6 +135,7 @@ services:
       context: .
       dockerfile: scout/Dockerfile
     container_name: clipfeed-scout
+    profiles: ["ai"]
     restart: unless-stopped
     environment:
       DB_PATH: /data/clipfeed.db

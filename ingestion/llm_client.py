@@ -14,6 +14,9 @@ import requests
 
 logger = logging.getLogger("llm_client")
 
+# Master toggle — when false, all LLM calls are skipped instantly.
+ENABLE_AI = os.getenv("ENABLE_AI", "true").lower() == "true"
+
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
@@ -132,6 +135,9 @@ def _extract_completion_text(response) -> str:
 
 def is_available() -> bool:
     """Check if configured LLM provider is reachable."""
+    if not ENABLE_AI:
+        return False
+
     provider = _provider()
     try:
         if provider == "ollama":
