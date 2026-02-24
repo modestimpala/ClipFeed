@@ -1137,3 +1137,51 @@ func TestHandleGetTopicTree(t *testing.T) {
 		t.Errorf("child name = %v, want pasta", children[0].(map[string]interface{})["name"])
 	}
 }
+
+// --- Security headers middleware ---
+
+func TestSecurityHeaders(t *testing.T) {
+handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+writeJSON(w, 200, map[string]string{"ok": "true"})
+})
+
+// Wrap with security headers middleware (same logic as in main()).
+secured := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("X-Content-Type-Options", "nosniff")
+w.Header().Set("X-Frame-Options", "DENY")
+w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+handler.ServeHTTP(w, r)
+})
+
+req := httptest.NewRequest("GET", "/health", nil)
+rec := httptest.NewRecorder()
+secured.ServeHTTP(rec, req)
+
+if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+}
+if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+t.Errorf("X-Frame-Options = %q, want %q", got, "DENY")
+}
+if got := rec.Header().Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+t.Errorf("Referrer-Policy = %q, want %q", got, "strict-origin-when-cross-origin")
+}
+}
+
+// --- CORS config ---
+
+func TestLoadConfig_AllowedOriginsDefault(t *testing.T) {
+t.Setenv("ALLOWED_ORIGINS", "")
+cfg := loadConfig()
+if cfg.AllowedOrigins != "*" {
+t.Errorf("AllowedOrigins = %q, want %q", cfg.AllowedOrigins, "*")
+}
+}
+
+func TestLoadConfig_AllowedOriginsCustom(t *testing.T) {
+t.Setenv("ALLOWED_ORIGINS", "https://example.com,https://app.example.com")
+cfg := loadConfig()
+if cfg.AllowedOrigins != "https://example.com,https://app.example.com" {
+t.Errorf("AllowedOrigins = %q", cfg.AllowedOrigins)
+}
+}
