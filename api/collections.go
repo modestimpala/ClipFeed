@@ -14,7 +14,10 @@ func (a *App) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
 
 	id := uuid.New().String()
 	_, err := a.db.ExecContext(r.Context(),
@@ -52,7 +55,9 @@ func (a *App) handleListCollections(w http.ResponseWriter, r *http.Request) {
 		var description *string
 		var isPublic int
 		var clipCount int
-		rows.Scan(&id, &title, &description, &isPublic, &createdAt, &clipCount)
+		if err := rows.Scan(&id, &title, &description, &isPublic, &createdAt, &clipCount); err != nil {
+			continue
+		}
 		collections = append(collections, map[string]interface{}{
 			"id": id, "title": title, "description": description,
 			"is_public": isPublic == 1, "clip_count": clipCount, "created_at": createdAt,
@@ -62,11 +67,23 @@ func (a *App) handleListCollections(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleAddToCollection(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
 	collectionID := chi.URLParam(r, "id")
 	var req struct {
 		ClipID string `json:"clip_id"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	var count int
+	if err := a.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM collections WHERE id = ? AND user_id = ?`, collectionID, userID,
+	).Scan(&count); err != nil || count == 0 {
+		writeJSON(w, 404, map[string]string{"error": "collection not found"})
+		return
+	}
 
 	_, err := a.db.ExecContext(r.Context(), `
 		INSERT INTO collection_clips (collection_id, clip_id, position)
@@ -82,12 +99,24 @@ func (a *App) handleAddToCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleRemoveFromCollection(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
 	collectionID := chi.URLParam(r, "id")
 	clipID := chi.URLParam(r, "clipId")
 
-	a.db.ExecContext(r.Context(),
+	var count int
+	if err := a.db.QueryRowContext(r.Context(),
+		`SELECT COUNT(*) FROM collections WHERE id = ? AND user_id = ?`, collectionID, userID,
+	).Scan(&count); err != nil || count == 0 {
+		writeJSON(w, 404, map[string]string{"error": "collection not found"})
+		return
+	}
+
+	if _, err := a.db.ExecContext(r.Context(),
 		`DELETE FROM collection_clips WHERE collection_id = ? AND clip_id = ?`,
-		collectionID, clipID)
+		collectionID, clipID); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to remove from collection"})
+		return
+	}
 
 	writeJSON(w, 200, map[string]string{"status": "removed"})
 }

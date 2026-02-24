@@ -153,10 +153,13 @@ func (a *App) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.db.ExecContext(r.Context(),
+	if _, err := a.db.ExecContext(r.Context(),
 		`UPDATE platform_cookies SET is_active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		 WHERE user_id = ? AND platform = ?`,
-		userID, platform)
+		userID, platform); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to remove cookie"})
+		return
+	}
 
 	writeJSON(w, 200, map[string]string{"status": "removed", "platform": platform})
 }

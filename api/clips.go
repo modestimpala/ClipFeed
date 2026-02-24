@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -174,7 +175,8 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 		"model": getEnv("OLLAMA_MODEL", "llama3.2:3b"), "prompt": prompt, "stream": false,
 	})
 
-	resp, err := http.Post(ollamaURL+"/api/generate", "application/json",
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post(ollamaURL+"/api/generate", "application/json",
 		strings.NewReader(string(reqBody)))
 	if err != nil {
 		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
@@ -190,9 +192,11 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 
 	if result.Response != "" {
 		modelName := getEnv("OLLAMA_MODEL", "llama3.2:3b")
-		a.db.ExecContext(r.Context(),
+		if _, err := a.db.ExecContext(r.Context(),
 			`INSERT OR REPLACE INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)`,
-			clipID, result.Response, modelName)
+			clipID, result.Response, modelName); err != nil {
+			log.Printf("failed to cache summary for clip %s: %v", clipID, err)
+		}
 	}
 
 	writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": result.Response, "cached": false})

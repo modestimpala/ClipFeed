@@ -7,7 +7,7 @@ import (
 )
 
 func scanClips(rows *sql.Rows) []map[string]interface{} {
-	var clips []map[string]interface{}
+	clips := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var id, title, createdAt, sourceID string
 		var description, thumbnailKey, topicsJSON, tagsJSON sql.NullString

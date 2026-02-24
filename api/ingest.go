@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -48,7 +49,9 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
 		sourceID, req.URL, platform, userID)
 	if err != nil {
-		conn.ExecContext(r.Context(), "ROLLBACK")
+		if _, rbErr := conn.ExecContext(r.Context(), "ROLLBACK"); rbErr != nil {
+			log.Printf("rollback failed after source insert error: %v", rbErr)
+		}
 		writeJSON(w, 500, map[string]string{"error": "failed to create source"})
 		return
 	}
@@ -57,12 +60,17 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO jobs (id, source_id, job_type, payload) VALUES (?, ?, 'download', ?)`,
 		jobID, sourceID, payload)
 	if err != nil {
-		conn.ExecContext(r.Context(), "ROLLBACK")
+		if _, rbErr := conn.ExecContext(r.Context(), "ROLLBACK"); rbErr != nil {
+			log.Printf("rollback failed after job insert error: %v", rbErr)
+		}
 		writeJSON(w, 500, map[string]string{"error": "failed to queue job"})
 		return
 	}
 
-	conn.ExecContext(r.Context(), "COMMIT")
+	if _, err := conn.ExecContext(r.Context(), "COMMIT"); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to commit"})
+		return
+	}
 
 	writeJSON(w, 202, map[string]interface{}{
 		"source_id": sourceID,

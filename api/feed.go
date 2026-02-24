@@ -130,10 +130,13 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 
 	var hits []map[string]interface{}
 	for rows.Next() {
-		var id, title, thumbnailKey, topicsJSON string
+		var id, title, topicsJSON string
+		var thumbnailKey *string
 		var duration, score float64
 		var platform, channelName, sourceURL *string
-		rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &score, &platform, &channelName, &sourceURL)
+		if err := rows.Scan(&id, &title, &duration, &thumbnailKey, &topicsJSON, &score, &platform, &channelName, &sourceURL); err != nil {
+			continue
+		}
 		var topics []string
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		hits = append(hits, map[string]interface{}{

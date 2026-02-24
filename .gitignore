@@ -1,8 +1,10 @@
 .env
 *.env.local
 node_modules/
+package-lock.json
 web/dist/
 api/server
+api/clipfeed
 __pycache__/
 *.pyc
 *.pyo
