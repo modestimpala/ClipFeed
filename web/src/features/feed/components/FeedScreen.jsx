@@ -63,6 +63,7 @@ export function FeedScreen() {
     <div className="feed-container">
       <div className="feed-viewport" ref={viewportRef}>
         {clips.map((clip, index) => {
+          // Render video for active card and ±1 neighbors so iOS decoders stay warm
           const isNearActive = Math.abs(index - activeIndex) <= 1;
 
           return (
@@ -73,6 +74,7 @@ export function FeedScreen() {
               shouldRenderVideo={isNearActive}
               isMuted={isGlobalMuted}
               onUnmute={() => setIsGlobalMuted(false)}
+              onRequireMute={() => setIsGlobalMuted(true)}
               onInteract={handleInteract}
               ref={(el) => setCardRef(clip.id, el)}
             />
