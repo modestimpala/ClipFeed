@@ -4,23 +4,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+**Do NOT run `go`, `npm`, or `python` on the host.** Always use Docker.
+
 ```bash
-# Development (local, no Docker)
-make dev-api          # cd api && go run .
-make dev-web          # cd web && npm run dev
+# Targeted rebuild + restart (preferred — only rebuilds what changed)
+docker compose up -d --build api       # Go API changes
+docker compose up -d --build web       # frontend changes
+docker compose up -d --build worker    # ingestion worker changes
+docker compose up -d --build scout     # scout changes
 
-# Testing
-cd api && go test ./...
-cd ingestion && python -m py_compile worker.py
-cd web && npm run build
+# Run API tests inside Docker
+make test-api-docker
 
-# Docker
-make up               # docker compose up -d
-make down
-make build            # rebuild all images (no cache)
+# Stack management
+make up               # start all services
+make down             # stop all services
+make build            # full rebuild, all images (slow — avoid unless needed)
 make logs-api
 make logs-worker
 make shell-db         # sqlite3 shell into /data/clipfeed.db
+
+# GPU stack (worker + Ollama get NVIDIA GPU access)
+make gpu-up           # start with GPU override
+make gpu-down
+make gpu-build        # full GPU rebuild (slow — avoid unless needed)
+make gpu-logs
+make gpu-logs-worker
+make gpu-logs-api
 
 # Maintenance
 make lifecycle        # expire old clips (run periodically / cron)

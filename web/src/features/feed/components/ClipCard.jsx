@@ -58,19 +58,32 @@ export const ClipCard = React.forwardRef(function ClipCard({
     if (!video) return;
 
     if (isActive && streamUrl) {
+      const startPlayback = () => {
+        video.play().then(() => {
+          setPlaying(true);
+          startTimeRef.current = Date.now();
+          onInteract?.(clip.id, 'view');
+        }).catch((e) => {
+          console.warn("Autoplay prevented:", e);
+          setPlaying(false);
+        });
+      };
+
       video.src = streamUrl;
-      video.play().then(() => {
-        setPlaying(true);
-        startTimeRef.current = Date.now();
-        onInteract?.(clip.id, 'view');
-      }).catch((e) => {
-        console.warn("Autoplay prevented:", e);
-        setPlaying(false);
-      });
+      // iOS requires waiting for data before play() to avoid black frames
+      if (video.readyState >= 2) {
+        startPlayback();
+      } else {
+        const onReady = () => {
+          video.removeEventListener('loadeddata', onReady);
+          startPlayback();
+        };
+        video.addEventListener('loadeddata', onReady);
+        video.load();
+      }
     } else {
       video.pause();
-      video.removeAttribute('src');
-      video.load();
+      video.src = '';
       setPlaying(false);
       setProgress(0);
       if (startTimeRef.current && clip) {
@@ -157,9 +170,11 @@ export const ClipCard = React.forwardRef(function ClipCard({
         <video 
           ref={videoRef} 
           playsInline 
-          preload="metadata"
+          webkit-playsinline="true"
+          preload="auto"
           loop 
           muted={isMuted}
+          poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
         />
       ) : (
         <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000' }} />
