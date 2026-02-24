@@ -57,4 +57,15 @@ export const api = {
   triggerScoutSource: (id) => request('POST', `/scout/sources/${id}/trigger`),
   getScoutCandidates: (status) => request('GET', `/scout/candidates?status=${encodeURIComponent(status)}`),
   approveCandidate: (id) => request('POST', `/scout/candidates/${id}/approve`),
+
+  // Collections
+  getCollections: () => request('GET', '/collections'),
+  createCollection: (title, description) =>
+    request('POST', '/collections', { title, description }),
+  deleteCollection: (id) => request('DELETE', `/collections/${id}`),
+  getCollectionClips: (id) => request('GET', `/collections/${id}/clips`),
+  addToCollection: (collectionId, clipId) =>
+    request('POST', `/collections/${collectionId}/clips`, { clip_id: clipId }),
+  removeFromCollection: (collectionId, clipId) =>
+    request('DELETE', `/collections/${collectionId}/clips/${clipId}`),
 };

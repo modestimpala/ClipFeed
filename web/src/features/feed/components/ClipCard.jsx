@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
+import { CollectionPicker } from '../../../shared/ui/CollectionPicker';
 import { videoCache } from '../../../shared/utils/videoCache';
 
 function formatDuration(s) {
@@ -34,7 +35,6 @@ export const ClipCard = React.forwardRef(function ClipCard({
   shouldRenderVideo,
   isMuted,
   onUnmute,
-  onRequireMute,
   onInteract 
 }, ref) {
   const videoRef = useRef(null);
@@ -44,95 +44,63 @@ export const ClipCard = React.forwardRef(function ClipCard({
   const [saved, setSaved] = useState(false);
   const [streamUrl, setStreamUrl] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
+  const [showCollections, setShowCollections] = useState(false);
   const startTimeRef = useRef(null);
+  const longPressRef = useRef(null);
 
-  // Fetch stream URL — use cached blob instantly, otherwise stream immediately
-  // and kick off a background blob fetch for next time
+  // Fetch stream URL — use cached blob instantly, otherwise stream directly
   useEffect(() => {
     if (!shouldRenderVideo || !clip) return;
     let cancelled = false;
 
-    // Check blob cache first (instant if preloaded)
     const cached = videoCache.getCachedUrl(clip.id);
     if (cached) {
       setStreamUrl(cached);
       return;
     }
 
-    // Not cached — fetch the presigned URL and use it for immediate streaming
     api.getStreamUrl(clip.id)
       .then((data) => {
         if (cancelled || !data.url) return;
-        // Set the network URL right away so playback starts immediately
         setStreamUrl(data.url);
-        // Background: download the blob for future instant playback
-        videoCache.fetchAndCache(clip.id, data.url).then((blobUrl) => {
-          if (!cancelled && blobUrl) setStreamUrl(blobUrl);
-        });
+        // Cache quietly in background for revisits, but don't swap src mid-playback
+        videoCache.fetchAndCache(clip.id, data.url).catch(() => {});
       })
       .catch(() => {});
-
     return () => { cancelled = true; };
   }, [clip?.id, shouldRenderVideo]);
 
-  // Cleanup: release iOS hardware decoder on unmount
-  useEffect(() => {
-    const video = videoRef.current;
-    return () => {
-      if (video) {
-        video.pause();
-        video.removeAttribute('src');
-        video.load();
-      }
-    };
-  }, []);
-
-  // Handle playback & source assignment
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
-    let onReady = null;
-
     if (isActive && streamUrl) {
       const startPlayback = () => {
-        video.muted = isMuted;
-        const playPromise = video.play();
-        if (playPromise !== undefined) {
-          playPromise.then(() => {
-            setPlaying(true);
-            startTimeRef.current = Date.now();
-            onInteract?.(clip.id, 'view');
-          }).catch((e) => {
-            console.warn("Autoplay prevented:", e);
-            if (!isMuted) {
-              onRequireMute?.();
-              return;
-            }
-            setPlaying(false);
-          });
-        }
+        video.play().then(() => {
+          setPlaying(true);
+          startTimeRef.current = Date.now();
+          onInteract?.(clip.id, 'view');
+        }).catch((e) => {
+          console.warn("Autoplay prevented:", e);
+          setPlaying(false);
+        });
       };
 
       video.src = streamUrl;
-      video.load();
-
+      // iOS requires waiting for data before play() to avoid black frames
       if (video.readyState >= 2) {
         startPlayback();
       } else {
-        onReady = () => {
+        const onReady = () => {
           video.removeEventListener('loadeddata', onReady);
           startPlayback();
         };
         video.addEventListener('loadeddata', onReady);
+        video.load();
       }
     } else {
       video.pause();
-      // Aggressively free iOS hardware decoders when inactive
-      if (!isActive) {
-        video.removeAttribute('src');
-        video.load();
-      }
+      video.src = '';
       setPlaying(false);
       setProgress(0);
       if (startTimeRef.current && clip) {
@@ -142,35 +110,24 @@ export const ClipCard = React.forwardRef(function ClipCard({
         startTimeRef.current = null;
       }
     }
-
-    return () => {
-      if (onReady) {
-        video.removeEventListener('loadeddata', onReady);
-      }
-    };
-  }, [isActive, streamUrl, clip, onInteract, isMuted, onRequireMute]);
+  }, [isActive, streamUrl, clip, onInteract]);
 
   useEffect(() => {
     if (!isActive) setShowInfo(false);
   }, [isActive]);
 
-  // Progress tracking & loop handling
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const onTime = () => { if (video.duration) setProgress((video.currentTime / video.duration) * 100); };
-    const onEnd = () => {
-      video.currentTime = 0;
-      const playPromise = video.play();
-      if (playPromise !== undefined) playPromise.catch(() => {});
-    };
+    const onEnd = () => { video.currentTime = 0; video.play().catch(() => {}); };
     video.addEventListener('timeupdate', onTime);
     video.addEventListener('ended', onEnd);
     return () => {
       video.removeEventListener('timeupdate', onTime);
       video.removeEventListener('ended', onEnd);
     };
-  }, []);
+  }, [shouldRenderVideo]);
 
   function handleVideoClick() {
     if (showInfo) {
@@ -181,10 +138,8 @@ export const ClipCard = React.forwardRef(function ClipCard({
     if (!video) return;
 
     if (isMuted) {
-      // Set muted=false directly on DOM node inside the click handler
-      // so iOS WebKit treats it as a synchronous user gesture for audio
-      video.muted = false;
       onUnmute();
+      return;
     }
 
     if (video.paused) {
@@ -209,6 +164,36 @@ export const ClipCard = React.forwardRef(function ClipCard({
     else api.unsaveClip(clip.id).catch(() => setSaved(true));
   }
 
+  function handleSavePointerDown(e) {
+    e.stopPropagation();
+    longPressRef.current = setTimeout(() => {
+      longPressRef.current = 'fired';
+      // Save first if not already saved
+      if (!saved) {
+        setSaved(true);
+        api.saveClip(clip.id).catch(() => setSaved(false));
+      }
+      setShowCollections(true);
+    }, 500);
+  }
+
+  function handleSavePointerUp(e) {
+    e.stopPropagation();
+    if (longPressRef.current === 'fired') {
+      longPressRef.current = null;
+      return; // long press handled it
+    }
+    clearTimeout(longPressRef.current);
+    longPressRef.current = null;
+    handleSave(e);
+  }
+
+  function handleSavePointerCancel(e) {
+    e.stopPropagation();
+    if (longPressRef.current !== 'fired') clearTimeout(longPressRef.current);
+    longPressRef.current = null;
+  }
+
   const handleToggleInfo = useCallback((e) => {
     e.stopPropagation();
     setShowInfo((v) => !v);
@@ -228,22 +213,18 @@ export const ClipCard = React.forwardRef(function ClipCard({
   return (
     <div className="clip-card" ref={ref} data-clip-id={clip.id} onClick={handleVideoClick}>
       
-      {/* Always keep <video> in DOM to preserve iOS unmute gesture tokens.
-         Toggle visibility via CSS instead of unmounting. */}
-      <video
-        ref={videoRef}
-        style={{ display: shouldRenderVideo ? 'block' : 'none', width: '100%', height: '100%', objectFit: 'cover' }}
-        playsInline
-        webkit-playsinline="true"
-        disablePictureInPicture
-        disableRemotePlayback
-        preload="none"
-        loop
-        muted={isMuted}
-        poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
-      />
-      {!shouldRenderVideo && (
-        <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000', position: 'absolute', top: 0, left: 0 }} />
+      {shouldRenderVideo ? (
+        <video 
+          ref={videoRef} 
+          playsInline 
+          webkit-playsinline="true"
+          preload="auto"
+          loop 
+          muted={isMuted}
+          poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
+        />
+      ) : (
+        <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000' }} />
       )}
 
       {isActive && isMuted && (
@@ -269,13 +250,23 @@ export const ClipCard = React.forwardRef(function ClipCard({
 
       <div className="clip-actions">
         <button className={`action-btn ${liked ? 'active' : ''}`} onClick={handleLike}><Icons.Heart filled={liked} /></button>
-        <button className={`action-btn ${saved ? 'active' : ''}`} onClick={handleSave}><Icons.Bookmark filled={saved} /></button>
+        <button
+          className={`action-btn ${saved ? 'active' : ''}`}
+          onPointerDown={handleSavePointerDown}
+          onPointerUp={handleSavePointerUp}
+          onPointerCancel={handleSavePointerCancel}
+          onContextMenu={(e) => e.preventDefault()}
+        ><Icons.Bookmark filled={saved} /></button>
+        <button className="action-btn" onClick={(e) => { e.stopPropagation(); setShowCollections(true); }}><Icons.FolderPlus /></button>
         <button className={`action-btn ${showInfo ? 'active' : ''}`} onClick={handleToggleInfo}><Icons.Info /></button>
         {clip.source_url && (
           <button className="action-btn" onClick={handleOpenSource}><Icons.ExternalLink /></button>
         )}
-        <button className="action-btn" onClick={(e) => e.stopPropagation()}><Icons.Share /></button>
       </div>
+
+      {showCollections && (
+        <CollectionPicker clipId={clip.id} onClose={() => setShowCollections(false)} />
+      )}
 
       {showInfo && (
         <div className="clip-info-panel" onClick={(e) => e.stopPropagation()}>

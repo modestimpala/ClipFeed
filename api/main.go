@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -141,6 +142,12 @@ func main() {
 		log.Printf("created bucket: %s", cfg.MinioBucket)
 	}
 
+	// Set public-read policy so thumbnails load without presigned URLs
+	publicPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/*"]}]}`, cfg.MinioBucket)
+	if err := minioClient.SetBucketPolicy(ctx, cfg.MinioBucket, publicPolicy); err != nil {
+		log.Printf("warning: failed to set public-read policy on bucket: %v", err)
+	}
+
 	app := &App{db: db, minio: minioClient, cfg: cfg}
 	app.refreshTopicGraph()
 	go app.topicGraphRefreshLoop()
@@ -210,8 +217,10 @@ func main() {
 		r.Delete("/api/me/cookies/{platform}", app.handleDeleteCookie)
 		r.Post("/api/collections", app.handleCreateCollection)
 		r.Get("/api/collections", app.handleListCollections)
+		r.Get("/api/collections/{id}/clips", app.handleGetCollectionClips)
 		r.Post("/api/collections/{id}/clips", app.handleAddToCollection)
 		r.Delete("/api/collections/{id}/clips/{clipId}", app.handleRemoveFromCollection)
+		r.Delete("/api/collections/{id}", app.handleDeleteCollection)
 
 		// Saved filters
 		r.Post("/api/filters", app.handleCreateFilter)
