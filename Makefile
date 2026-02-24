@@ -1,13 +1,19 @@
 .PHONY: up down build logs shell-api shell-worker shell-db lifecycle score test-api-docker clean \
-       gpu-up gpu-down gpu-build gpu-logs gpu-logs-worker gpu-logs-api
+       ai-up ai-down gpu-up gpu-down gpu-build gpu-logs gpu-logs-worker gpu-logs-api
 
-GPU_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.gpu.yml
+GPU_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ai
 
 up:
 	docker compose up -d
 
 down:
 	docker compose down
+
+ai-up:
+	docker compose --profile ai up -d
+
+ai-down:
+	docker compose --profile ai down
 
 build:
 	docker compose build --no-cache

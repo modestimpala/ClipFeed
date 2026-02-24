@@ -189,6 +189,13 @@ func main() {
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	})
 
+	r.Get("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		aiEnabled := os.Getenv("ENABLE_AI") == "true"
+		writeJSON(w, 200, map[string]interface{}{
+			"ai_enabled": aiEnabled,
+		})
+	})
+
 	r.Post("/api/auth/register", app.handleRegister)
 	r.Post("/api/auth/login", app.handleLogin)
 	r.Get("/api/feed", app.optionalAuth(app.handleFeed))

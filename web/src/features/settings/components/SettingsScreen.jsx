@@ -9,6 +9,7 @@ import '../scout.css';
 export function SettingsScreen({ onLogout }) {
   const { canInstall, showIOSGuide, installed, promptInstall } = useInstallPrompt();
   const [subscreen, setSubscreen] = useState(null);
+  const [aiEnabled, setAiEnabled] = useState(false);
 
   const [prefs, setPrefs] = useState({
     exploration_rate: 0.3,
@@ -27,6 +28,9 @@ export function SettingsScreen({ onLogout }) {
           setPrefs((prev) => ({ ...prev, ...data.preferences }));
         }
       })
+      .catch(() => {});
+    api.getConfig()
+      .then((data) => setAiEnabled(!!data.ai_enabled))
       .catch(() => {});
   }, []);
 
@@ -121,6 +125,7 @@ export function SettingsScreen({ onLogout }) {
         />
       </div>
 
+      {aiEnabled && (
       <div className="settings-section">
         <h3>Discovery</h3>
         <div className="scout-nav-row" onClick={() => setSubscreen('scout')}>
@@ -132,6 +137,7 @@ export function SettingsScreen({ onLogout }) {
           </span>
         </div>
       </div>
+      )}
 
       {api.getToken() && <CookieSection />}
 
