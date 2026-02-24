@@ -37,28 +37,30 @@ type App struct {
 }
 
 type Config struct {
-	DBPath        string
-	L2RModelPath  string
-	MinioEndpoint string
-	MinioAccess   string
-	MinioSecret   string
-	MinioBucket   string
-	MinioSSL      bool
-	JWTSecret     string
-	Port          string
+	DBPath         string
+	L2RModelPath   string
+	MinioEndpoint  string
+	MinioAccess    string
+	MinioSecret    string
+	MinioBucket    string
+	MinioSSL       bool
+	JWTSecret      string
+	Port           string
+	AllowedOrigins string
 }
 
 func loadConfig() Config {
 	return Config{
-		DBPath:        getEnv("DB_PATH", "/data/clipfeed.db"),
-		L2RModelPath:  getEnv("L2R_MODEL_PATH", "/data/l2r_model.json"),
-		MinioEndpoint: getEnv("MINIO_ENDPOINT", "localhost:9000"),
-		MinioAccess:   getEnv("MINIO_ACCESS_KEY", "clipfeed"),
-		MinioSecret:   getEnv("MINIO_SECRET_KEY", "changeme123"),
-		MinioBucket:   getEnv("MINIO_BUCKET", "clips"),
-		MinioSSL:      getEnv("MINIO_USE_SSL", "false") == "true",
-		JWTSecret:     getEnv("JWT_SECRET", "supersecretkey"),
-		Port:          getEnv("PORT", "8080"),
+		DBPath:         getEnv("DB_PATH", "/data/clipfeed.db"),
+		L2RModelPath:   getEnv("L2R_MODEL_PATH", "/data/l2r_model.json"),
+		MinioEndpoint:  getEnv("MINIO_ENDPOINT", "localhost:9000"),
+		MinioAccess:    getEnv("MINIO_ACCESS_KEY", "clipfeed"),
+		MinioSecret:    getEnv("MINIO_SECRET_KEY", "changeme123"),
+		MinioBucket:    getEnv("MINIO_BUCKET", "clips"),
+		MinioSSL:       getEnv("MINIO_USE_SSL", "false") == "true",
+		JWTSecret:      getEnv("JWT_SECRET", "supersecretkey"),
+		Port:           getEnv("PORT", "8080"),
+		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
 	}
 }
 
@@ -71,6 +73,13 @@ func getEnv(key, fallback string) string {
 
 func main() {
 	cfg := loadConfig()
+
+	if cfg.JWTSecret == "supersecretkey" {
+		log.Println("WARNING: JWT_SECRET is set to an insecure default. Set a strong JWT_SECRET in production.")
+	}
+	if cfg.MinioSecret == "changeme123" {
+		log.Println("WARNING: MINIO_SECRET_KEY is set to an insecure default. Set a strong MINIO_SECRET_KEY in production.")
+	}
 
 	// SQLite
 	db, err := sql.Open("sqlite", cfg.DBPath)
@@ -142,12 +151,30 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
+
+	// Security headers
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			next.ServeHTTP(w, r)
+		})
+	})
+
+	// CORS — AllowedOrigins is configurable via ALLOWED_ORIGINS (comma-separated).
+	// AllowCredentials is intentionally false: JWT tokens are sent via the
+	// Authorization header and do not require browser credential mode.
+	allowedOrigins := strings.Split(cfg.AllowedOrigins, ",")
+	for i := range allowedOrigins {
+		allowedOrigins[i] = strings.TrimSpace(allowedOrigins[i])
+	}
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   allowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},
-		AllowCredentials: true,
+		AllowCredentials: false,
 		MaxAge:           300,
 	}))
 
