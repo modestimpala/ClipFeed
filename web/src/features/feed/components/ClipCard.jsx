@@ -33,6 +33,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
   shouldRenderVideo,
   isMuted,
   onUnmute,
+  onRequireMute,
   onInteract 
 }, ref) {
   const videoRef = useRef(null);
@@ -44,6 +45,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
   const [showInfo, setShowInfo] = useState(false);
   const startTimeRef = useRef(null);
 
+  // Fetch stream URL
   useEffect(() => {
     if (!shouldRenderVideo || !clip) return;
     let cancelled = false;
@@ -53,37 +55,64 @@ export const ClipCard = React.forwardRef(function ClipCard({
     return () => { cancelled = true; };
   }, [clip?.id, shouldRenderVideo]);
 
+  // Cleanup: release iOS hardware decoder on unmount
+  useEffect(() => {
+    const video = videoRef.current;
+    return () => {
+      if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+    };
+  }, []);
+
+  // Handle playback & source assignment
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
+    let onReady = null;
+
     if (isActive && streamUrl) {
       const startPlayback = () => {
-        video.play().then(() => {
-          setPlaying(true);
-          startTimeRef.current = Date.now();
-          onInteract?.(clip.id, 'view');
-        }).catch((e) => {
-          console.warn("Autoplay prevented:", e);
-          setPlaying(false);
-        });
+        video.muted = isMuted;
+        const playPromise = video.play();
+        if (playPromise !== undefined) {
+          playPromise.then(() => {
+            setPlaying(true);
+            startTimeRef.current = Date.now();
+            onInteract?.(clip.id, 'view');
+          }).catch((e) => {
+            console.warn("Autoplay prevented:", e);
+            if (!isMuted) {
+              onRequireMute?.();
+              return;
+            }
+            setPlaying(false);
+          });
+        }
       };
 
       video.src = streamUrl;
-      // iOS requires waiting for data before play() to avoid black frames
+      video.load();
+
       if (video.readyState >= 2) {
         startPlayback();
       } else {
-        const onReady = () => {
+        onReady = () => {
           video.removeEventListener('loadeddata', onReady);
           startPlayback();
         };
         video.addEventListener('loadeddata', onReady);
-        video.load();
       }
     } else {
       video.pause();
-      video.src = '';
+      // Aggressively free iOS hardware decoders when inactive
+      if (!isActive) {
+        video.removeAttribute('src');
+        video.load();
+      }
       setPlaying(false);
       setProgress(0);
       if (startTimeRef.current && clip) {
@@ -93,24 +122,35 @@ export const ClipCard = React.forwardRef(function ClipCard({
         startTimeRef.current = null;
       }
     }
-  }, [isActive, streamUrl, clip, onInteract]);
+
+    return () => {
+      if (onReady) {
+        video.removeEventListener('loadeddata', onReady);
+      }
+    };
+  }, [isActive, streamUrl, clip, onInteract, isMuted, onRequireMute]);
 
   useEffect(() => {
     if (!isActive) setShowInfo(false);
   }, [isActive]);
 
+  // Progress tracking & loop handling
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const onTime = () => { if (video.duration) setProgress((video.currentTime / video.duration) * 100); };
-    const onEnd = () => { video.currentTime = 0; video.play().catch(() => {}); };
+    const onEnd = () => {
+      video.currentTime = 0;
+      const playPromise = video.play();
+      if (playPromise !== undefined) playPromise.catch(() => {});
+    };
     video.addEventListener('timeupdate', onTime);
     video.addEventListener('ended', onEnd);
     return () => {
       video.removeEventListener('timeupdate', onTime);
       video.removeEventListener('ended', onEnd);
     };
-  }, [shouldRenderVideo]);
+  }, []);
 
   function handleVideoClick() {
     if (showInfo) {
@@ -121,8 +161,10 @@ export const ClipCard = React.forwardRef(function ClipCard({
     if (!video) return;
 
     if (isMuted) {
+      // Set muted=false directly on DOM node inside the click handler
+      // so iOS WebKit treats it as a synchronous user gesture for audio
+      video.muted = false;
       onUnmute();
-      return;
     }
 
     if (video.paused) {
@@ -166,18 +208,22 @@ export const ClipCard = React.forwardRef(function ClipCard({
   return (
     <div className="clip-card" ref={ref} data-clip-id={clip.id} onClick={handleVideoClick}>
       
-      {shouldRenderVideo ? (
-        <video 
-          ref={videoRef} 
-          playsInline 
-          webkit-playsinline="true"
-          preload="auto"
-          loop 
-          muted={isMuted}
-          poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
-        />
-      ) : (
-        <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000' }} />
+      {/* Always keep <video> in DOM to preserve iOS unmute gesture tokens.
+         Toggle visibility via CSS instead of unmounting. */}
+      <video
+        ref={videoRef}
+        style={{ display: shouldRenderVideo ? 'block' : 'none', width: '100%', height: '100%', objectFit: 'cover' }}
+        playsInline
+        webkit-playsinline="true"
+        disablePictureInPicture
+        disableRemotePlayback
+        preload="none"
+        loop
+        muted={isMuted}
+        poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
+      />
+      {!shouldRenderVideo && (
+        <div className="video-placeholder" style={{ width: '100%', height: '100%', background: '#000', position: 'absolute', top: 0, left: 0 }} />
       )}
 
       {isActive && isMuted && (
