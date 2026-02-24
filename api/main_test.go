@@ -671,6 +671,33 @@ func TestHandleIngest_EmptyURL(t *testing.T) {
 	}
 }
 
+func TestHandleIngest_InvalidURLScheme(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "badscheme", "password123")
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"ftp scheme", "ftp://example.com/video.mp4"},
+		{"no scheme", "example.com/video.mp4"},
+		{"javascript scheme", "javascript:alert(1)"},
+		{"file scheme", "file:///etc/passwd"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]string{"url": tt.url}
+			req := authRequest(t, app, "POST", "/api/ingest", body, token)
+			rec := httptest.NewRecorder()
+			app.handleIngest(rec, req)
+			if rec.Code != 400 {
+				t.Errorf("status = %d, want 400 for url %q", rec.Code, tt.url)
+			}
+		})
+	}
+}
+
 // --- Platform Cookies ---
 
 func TestHandleSetCookie_ValidPlatform(t *testing.T) {
