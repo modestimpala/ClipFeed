@@ -934,7 +934,7 @@ class Worker:
     def _generate_clip_title(self, transcript: str, source_title: str, index: int) -> str:
         """Generate a title via LLM if available, otherwise fall back to heuristics."""
         try:
-            from ollama_client import generate_title
+            from llm_client import generate_title
             llm_title = generate_title(transcript, source_title)
             if llm_title and len(llm_title) > 3:
                 return llm_title
@@ -956,7 +956,7 @@ class Worker:
         if not topics:
             return topics
         try:
-            from ollama_client import refine_topics
+            from llm_client import refine_topics
             refined = refine_topics(transcript, topics)
             if refined and isinstance(refined, list):
                 return refined

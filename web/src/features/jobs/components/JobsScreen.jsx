@@ -6,11 +6,53 @@ export function JobsScreen() {
   const [jobs, setJobs] = useState([]);
 
   useEffect(() => {
-    api.getJobs().then((data) => setJobs(data.jobs || [])).catch(console.error);
-    const interval = setInterval(() => {
-      api.getJobs().then((data) => setJobs(data.jobs || [])).catch(() => {});
-    }, 5000);
-    return () => clearInterval(interval);
+    let cancelled = false;
+    let timeoutId = null;
+    let delayMs = 5000;
+
+    const isVisible = () => document.visibilityState === 'visible';
+    const hasActiveJobs = (items) => items.some((job) => job.status === 'queued' || job.status === 'running');
+
+    const schedule = (nextDelay) => {
+      if (cancelled) return;
+      timeoutId = setTimeout(tick, nextDelay);
+    };
+
+    const tick = async () => {
+      try {
+        const data = await api.getJobs();
+        if (cancelled) return;
+
+        const nextJobs = data.jobs || [];
+        setJobs(nextJobs);
+
+        if (!isVisible()) {
+          delayMs = 30000;
+        } else {
+          delayMs = hasActiveJobs(nextJobs) ? 5000 : 15000;
+        }
+      } catch {
+        delayMs = Math.min(delayMs * 2, 60000);
+      } finally {
+        schedule(delayMs);
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (!isVisible()) return;
+      if (timeoutId) clearTimeout(timeoutId);
+      delayMs = 5000;
+      tick();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, []);
 
   return (

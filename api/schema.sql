@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS interactions (
 CREATE INDEX IF NOT EXISTS idx_interactions_user ON interactions(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_interactions_clip ON interactions(clip_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_action ON interactions(user_id, action);
+CREATE INDEX IF NOT EXISTS idx_interactions_user_clip_created ON interactions(user_id, clip_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS saved_clips (
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -138,6 +139,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, priority DESC, created_at ASC);
+CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, run_after, priority DESC, created_at ASC);
 
 CREATE TABLE IF NOT EXISTS platform_cookies (
     id         TEXT PRIMARY KEY,
@@ -205,6 +207,7 @@ CREATE TABLE IF NOT EXISTS clip_topics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clip_topics_topic ON clip_topics(topic_id);
+CREATE INDEX IF NOT EXISTS idx_clip_topics_clip ON clip_topics(clip_id);
 
 CREATE TABLE IF NOT EXISTS user_topic_affinities (
     user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

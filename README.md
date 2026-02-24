@@ -39,8 +39,8 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 | API | Go + Chi | REST API, auth, feed algorithm |
 | Frontend | React + Vite PWA | Mobile-first swipe feed |
 | Worker | Python | Video download, split, transcode, transcribe, score update |
-| Scout | Python | Local LLM-backed content scouting and discovery |
-| LLM | Ollama | Local model inference (embeddings, topic extraction) |
+| Scout | Python | LLM-backed content scouting and discovery |
+| LLM | Ollama or API provider | Local or hosted model inference (summaries, scoring, topic/title assistance) |
 | Database | SQLite | Users, clips, interactions, algorithm state, job queue, topic graph |
 | Storage | MinIO | S3-compatible object storage for video files |
 | Search | SQLite FTS5 | Full-text search across clips and transcripts |
@@ -70,7 +70,7 @@ The app will be available at `http://localhost`.
 
 ## Content Pipeline
 
-1. **Scouting:** The Scout worker uses Ollama to proactively discover and evaluate potential new content based on user interests.
+1. **Scouting:** The Scout worker uses the configured LLM provider to proactively discover and evaluate potential new content based on user interests.
 2. **Ingestion:** User or Scout submits a video URL (YouTube, Vimeo, TikTok, Instagram, etc.).
 3. **Processing:** Worker downloads via yt-dlp.
 4. **Segmentation:** ffmpeg detects scene changes and splits into 15-90s clips.
@@ -164,6 +164,14 @@ cd ingestion && pip install -r requirements.txt && python worker.py
 # Frontend (React)
 cd web && npm install && npm run dev
 ```
+
+## LLM Provider Configuration
+
+- Default (local): `LLM_PROVIDER=ollama` with internal Ollama service.
+- Hosted API: set `LLM_PROVIDER=openai`, `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
+- Anthropic: set `LLM_PROVIDER=anthropic`, `LLM_BASE_URL=https://api.anthropic.com/v1`, `LLM_API_KEY` (or `ANTHROPIC_API_KEY`), and `LLM_MODEL`.
+- Python workers route provider calls through LiteLLM.
+- OpenAI-compatible endpoints are supported (for example OpenAI and compatible gateways).
 
 ## Roadmap
 

@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import defaultdict
 
-import ollama_client
+import llm_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +28,10 @@ log = logging.getLogger("scout")
 DB_PATH = os.getenv("DB_PATH", "/data/clipfeed.db")
 SCOUT_INTERVAL = int(os.getenv("SCOUT_INTERVAL", "21600"))
 LLM_THRESHOLD = float(os.getenv("LLM_THRESHOLD", "6"))
-SCOUT_OLLAMA_AUTO_PULL = os.getenv("SCOUT_OLLAMA_AUTO_PULL", "1").lower() not in ("0", "false", "no")
+SCOUT_LLM_AUTO_PULL = (
+    os.getenv("SCOUT_LLM_AUTO_PULL")
+    or os.getenv("SCOUT_OLLAMA_AUTO_PULL", "1")
+).lower() not in ("0", "false", "no")
 SCOUT_MAX_LLM_PER_CYCLE = int(os.getenv("SCOUT_MAX_LLM_PER_CYCLE", "40"))
 SCOUT_MAX_LLM_PER_SOURCE = int(os.getenv("SCOUT_MAX_LLM_PER_SOURCE", "5"))
 SCOUT_MAX_LLM_PER_CHANNEL = int(os.getenv("SCOUT_MAX_LLM_PER_CHANNEL", "3"))
@@ -259,12 +262,12 @@ def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -
 
 
 def evaluate_candidates(db: sqlite3.Connection) -> None:
-    """Score pending candidates via Ollama with lightweight curation and diversity caps."""
-    if not ollama_client.is_available():
-        log.info("Ollama unavailable, skipping candidate evaluation")
+    """Score pending candidates via LLM with lightweight curation and diversity caps."""
+    if not llm_client.is_available():
+        log.info("LLM provider unavailable, skipping candidate evaluation")
         return
-    if not ollama_client.ensure_model(auto_pull=SCOUT_OLLAMA_AUTO_PULL):
-        log.info("Ollama model unavailable, skipping candidate evaluation")
+    if not llm_client.ensure_model(auto_pull=SCOUT_LLM_AUTO_PULL):
+        log.info("LLM model/config unavailable, skipping candidate evaluation")
         return
 
     cur = db.execute(
@@ -338,7 +341,7 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
         title = row["title"] or ""
         channel = row["channel_name"] or ""
 
-        score = ollama_client.evaluate_candidate(title, channel, top_topics)
+        score = llm_client.evaluate_candidate(title, channel, top_topics)
         if score is None:
             log.debug("Candidate %s left pending (LLM unavailable/parse failure)", cand_id[:8])
             continue
@@ -450,7 +453,7 @@ def main():
         LLM_THRESHOLD,
         TRIGGER_POLL_INTERVAL,
         SCOUT_MAX_LLM_PER_CYCLE,
-        SCOUT_OLLAMA_AUTO_PULL,
+        SCOUT_LLM_AUTO_PULL,
     )
 
     db = open_db()

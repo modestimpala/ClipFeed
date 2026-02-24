@@ -165,39 +165,189 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ollamaURL := getEnv("OLLAMA_URL", "http://ollama:11434")
 	prompt := fmt.Sprintf("Summarize this video transcript in 1-2 sentences:\n\n%s", transcript)
 	if len(prompt) > 4000 {
 		prompt = prompt[:4000]
 	}
 
-	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": getEnv("OLLAMA_MODEL", "llama3.2:3b"), "prompt": prompt, "stream": false,
-	})
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Post(ollamaURL+"/api/generate", "application/json",
-		strings.NewReader(string(reqBody)))
+	summaryText, modelName, err := generateSummaryWithLLM(prompt)
 	if err != nil {
 		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
 		return
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Response string `json:"response"`
-	}
-	json.Unmarshal(body, &result)
-
-	if result.Response != "" {
-		modelName := getEnv("OLLAMA_MODEL", "llama3.2:3b")
+	if summaryText != "" {
 		if _, err := a.db.ExecContext(r.Context(),
 			`INSERT OR REPLACE INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)`,
-			clipID, result.Response, modelName); err != nil {
+			clipID, summaryText, modelName); err != nil {
 			log.Printf("failed to cache summary for clip %s: %v", clipID, err)
 		}
 	}
 
-	writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": result.Response, "cached": false})
+	writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summaryText, "cached": false})
+}
+
+func generateSummaryWithLLM(prompt string) (string, string, error) {
+	provider := strings.ToLower(strings.TrimSpace(getEnv("LLM_PROVIDER", "ollama")))
+	model := strings.TrimSpace(getEnv("LLM_MODEL", ""))
+	if model == "" {
+		model = getEnv("OLLAMA_MODEL", "llama3.2:3b")
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(getEnv("LLM_BASE_URL", "")), "/")
+	if baseURL == "" {
+		if provider == "" || provider == "ollama" {
+			baseURL = strings.TrimRight(getEnv("OLLAMA_URL", "http://ollama:11434"), "/")
+		} else if provider == "anthropic" {
+			baseURL = "https://api.anthropic.com/v1"
+		} else {
+			baseURL = "https://api.openai.com/v1"
+		}
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	if provider == "" || provider == "ollama" {
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"model": model,
+			"prompt": prompt,
+			"stream": false,
+		})
+
+		resp, err := client.Post(baseURL+"/api/generate", "application/json", strings.NewReader(string(reqBody)))
+		if err != nil {
+			return "", model, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		var result struct {
+			Response string `json:"response"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return "", model, err
+		}
+		return strings.TrimSpace(result.Response), model, nil
+	}
+
+	apiKey := strings.TrimSpace(getEnv("LLM_API_KEY", getEnv("OPENAI_API_KEY", getEnv("ANTHROPIC_API_KEY", ""))))
+	if apiKey == "" {
+		return "", model, fmt.Errorf("missing API key")
+	}
+
+	if provider == "anthropic" {
+		anthropicVersion := strings.TrimSpace(getEnv("ANTHROPIC_VERSION", "2023-06-01"))
+		if anthropicVersion == "" {
+			anthropicVersion = "2023-06-01"
+		}
+
+		reqBody, _ := json.Marshal(map[string]interface{}{
+			"model": model,
+			"messages": []map[string]string{{"role": "user", "content": prompt}},
+			"max_tokens": 180,
+			"temperature": 0.2,
+		})
+
+		req, err := http.NewRequest("POST", baseURL+"/messages", strings.NewReader(string(reqBody)))
+		if err != nil {
+			return "", model, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", anthropicVersion)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", model, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
+		}
+
+		body, _ := io.ReadAll(resp.Body)
+		var result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return "", model, err
+		}
+
+		parts := make([]string, 0, len(result.Content))
+		for _, part := range result.Content {
+			if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
+				parts = append(parts, strings.TrimSpace(part.Text))
+			}
+		}
+
+		return strings.Join(parts, " "), model, nil
+	}
+
+	reqBody, _ := json.Marshal(map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+		"max_tokens": 180,
+		"temperature": 0.2,
+	})
+
+	req, err := http.NewRequest("POST", baseURL+"/chat/completions", strings.NewReader(string(reqBody)))
+	if err != nil {
+		return "", model, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", model, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", model, err
+	}
+	if len(result.Choices) == 0 {
+		return "", model, nil
+	}
+
+	var contentText string
+	if err := json.Unmarshal(result.Choices[0].Message.Content, &contentText); err == nil {
+		return strings.TrimSpace(contentText), model, nil
+	}
+
+	var contentParts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(result.Choices[0].Message.Content, &contentParts); err != nil {
+		return "", model, nil
+	}
+
+	parts := make([]string, 0, len(contentParts))
+	for _, p := range contentParts {
+		if p.Type == "text" && strings.TrimSpace(p.Text) != "" {
+			parts = append(parts, strings.TrimSpace(p.Text))
+		}
+	}
+
+	return strings.Join(parts, " "), model, nil
 }
