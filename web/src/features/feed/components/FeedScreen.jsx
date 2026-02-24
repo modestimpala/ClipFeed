@@ -57,6 +57,9 @@ export function FeedScreen() {
     for (let i = 1; i <= 2; i++) {
       const next = clips[activeIndex + i];
       if (next) {
+        // Skip the API call entirely if already cached or fetching
+        if (videoCache.getCachedUrl(next.id)) continue;
+
         api.getStreamUrl(next.id)
           .then(data => { if (data?.url) videoCache.preload(next.id, data.url); })
           .catch(() => {});
