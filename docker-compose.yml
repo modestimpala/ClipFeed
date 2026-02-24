@@ -42,7 +42,7 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      OLLAMA_URL: http://ollama:11434
+      LLM_URL: http://llm:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
@@ -77,7 +77,7 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      OLLAMA_URL: http://ollama:11434
+      LLM_URL: http://llm:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
@@ -114,20 +114,20 @@ services:
     ports:
       - "3000:3000"
 
-  # --- Local LLM (Ollama) ---
-  ollama:
+  # --- Local LLM (Ollama by default) ---
+  llm:
     image: ollama/ollama:latest
-    container_name: clipfeed-ollama
+    container_name: clipfeed-llm
     profiles: ["ai"]
     restart: unless-stopped
     volumes:
-      - ollama_data:/root/.ollama
+      - llm_data:/root/.ollama
     ports:
       - "11434:11434"
     deploy:
       resources:
         limits:
-          cpus: "${OLLAMA_CPUS:-4}"
+          cpus: "${LLM_CPUS:-4}"
 
   # --- Content Scout Worker ---
   scout:
@@ -143,11 +143,10 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      OLLAMA_URL: http://ollama:11434
+      LLM_URL: http://llm:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       SCOUT_LLM_AUTO_PULL: "${SCOUT_LLM_AUTO_PULL:-1}"
-      SCOUT_OLLAMA_AUTO_PULL: "${SCOUT_OLLAMA_AUTO_PULL:-1}"
-      OLLAMA_PULL_TIMEOUT: "${OLLAMA_PULL_TIMEOUT:-900}"
+      LLM_PULL_TIMEOUT: "${LLM_PULL_TIMEOUT:-900}"
       SCOUT_INTERVAL: "${SCOUT_INTERVAL:-21600}"
       LLM_THRESHOLD: "${LLM_THRESHOLD:-6}"
     volumes:
@@ -175,4 +174,4 @@ volumes:
   minio_data:
   db_data:
   worker_tmp:
-  ollama_data:
+  llm_data:

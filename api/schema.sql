@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     autoplay            INTEGER DEFAULT 1,
     nsfw_filter         INTEGER DEFAULT 1,
     scout_threshold     REAL DEFAULT 6.0,
+    diversity_mix       REAL DEFAULT 0.5,
+    trending_boost      INTEGER DEFAULT 1,
+    freshness_bias      REAL DEFAULT 0.5,
     updated_at          TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 

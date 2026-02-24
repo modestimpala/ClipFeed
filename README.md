@@ -30,8 +30,8 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
        | ffmpeg       |   +--------------+   +--------------+
        | whisper      |                            |
        +--------------+                      +-----+------+
-                                             |  Ollama *  |
-                                             | Local LLM  |
+                                             |   LLM *   |
+                                             |  (Ollama)  |
                                              +------------+
                                           * ai profile only
 ```
@@ -45,7 +45,7 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 | Worker | Python | Video download, scene-split, transcode, transcribe |
 | Score Updater | Python | Periodic content score recalculation |
 | Scout | Python (ai profile) | LLM-backed content discovery and scoring |
-| LLM | Ollama or API provider (ai profile) | Local or hosted inference (summaries, scoring, scouting) |
+| LLM | Ollama or hosted API (ai profile) | Local or hosted inference (summaries, scoring, scouting) |
 | Database | SQLite (WAL) | Single-connection DB: users, clips, interactions, jobs, topic graph, embeddings |
 | Storage | MinIO | S3-compatible object storage for video and thumbnail files |
 | Search | SQLite FTS5 | Full-text search across clip titles, transcripts, channels |
@@ -65,7 +65,7 @@ docker compose up -d
 docker compose logs -f worker
 ```
 
-**With AI features (Scout + Ollama):**
+**With AI features (Scout + LLM):**
 ```bash
 docker compose --profile ai up -d
 ```
@@ -206,7 +206,7 @@ make test-api-docker
 # Useful make targets
 make up                   # start all services
 make down                 # stop all services
-make ai-up                # start with ai profile (Scout + Ollama)
+make ai-up                # start with ai profile (Scout + LLM)
 make ai-down              # stop ai profile
 make gpu-up               # GPU-accelerated stack
 make gpu-down
@@ -225,7 +225,7 @@ Scout, clip summaries, and AI-assisted features require an LLM. Two modes:
 | Setting | Local (default) | Hosted API |
 |---------|----------------|------------|
 | `LLM_PROVIDER` | `ollama` | `openai` or `anthropic` |
-| `LLM_BASE_URL` | *(auto: internal Ollama)* | API endpoint URL |
+| `LLM_BASE_URL` | *(auto: internal LLM service)* | API endpoint URL |
 | `LLM_API_KEY` | *(not needed)* | Your API key |
 | `LLM_MODEL` | *(uses `OLLAMA_MODEL`)* | Model name |
 

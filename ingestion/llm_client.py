@@ -18,21 +18,17 @@ logger = logging.getLogger("llm_client")
 ENABLE_AI = os.getenv("ENABLE_AI", "true").lower() == "true"
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434").rstrip("/")
+LLM_URL = os.getenv("LLM_URL", "http://llm:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip() or OLLAMA_MODEL
-LLM_API_KEY = (
-    os.getenv("LLM_API_KEY", "").strip()
-    or os.getenv("OPENAI_API_KEY", "").strip()
-    or os.getenv("ANTHROPIC_API_KEY", "").strip()
-)
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01").strip() or "2023-06-01"
 
 # Timeouts
 AVAILABILITY_TIMEOUT = 3
 GENERATE_TIMEOUT = 30
-PULL_TIMEOUT = int(os.getenv("OLLAMA_PULL_TIMEOUT", "900"))
+PULL_TIMEOUT = int(os.getenv("LLM_PULL_TIMEOUT", "900"))
 
 
 def _provider() -> str:
@@ -46,7 +42,7 @@ def _model(model: str | None = None) -> str:
 def _base_url() -> str:
     provider = _provider()
     if provider == "ollama":
-        return (LLM_BASE_URL or OLLAMA_URL).rstrip("/")
+        return (LLM_BASE_URL or LLM_URL).rstrip("/")
     if provider == "anthropic":
         return (LLM_BASE_URL or "https://api.anthropic.com/v1").rstrip("/")
     return (LLM_BASE_URL or "https://api.openai.com/v1").rstrip("/")
