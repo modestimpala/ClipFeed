@@ -9,18 +9,31 @@ import (
 func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	userID, _ := r.Context().Value(userIDKey).(string)
 	limit := 20
+	fetchLimit := limit * 3 // Over-fetch candidates; post-ranking trims to limit
 	dedupeSeen24h := true
 	var topicWeights map[string]float64
+	feedPrefs := FeedPrefs{
+		DiversityMix:  0.5,
+		TrendingBoost: true,
+		FreshnessBias: 0.5,
+	}
 
 	if userID != "" {
 		var topicWeightsJSON string
 		var dedupeSeen24hRaw int
+		var diversityMix, freshnessBias float64
+		var trendingBoost int
 		if err := a.db.QueryRowContext(r.Context(),
-			`SELECT COALESCE(topic_weights, '{}'), COALESCE(dedupe_seen_24h, 1) FROM user_preferences WHERE user_id = ?`,
+			`SELECT COALESCE(topic_weights, '{}'), COALESCE(dedupe_seen_24h, 1),
+			        COALESCE(diversity_mix, 0.5), COALESCE(trending_boost, 1), COALESCE(freshness_bias, 0.5)
+			 FROM user_preferences WHERE user_id = ?`,
 			userID,
-		).Scan(&topicWeightsJSON, &dedupeSeen24hRaw); err == nil {
+		).Scan(&topicWeightsJSON, &dedupeSeen24hRaw, &diversityMix, &trendingBoost, &freshnessBias); err == nil {
 			json.Unmarshal([]byte(topicWeightsJSON), &topicWeights)
 			dedupeSeen24h = dedupeSeen24hRaw == 1
+			feedPrefs.DiversityMix = diversityMix
+			feedPrefs.TrendingBoost = trendingBoost == 1
+			feedPrefs.FreshnessBias = freshnessBias
 		}
 	}
 
@@ -35,7 +48,10 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			if json.Unmarshal([]byte(queryStr), &fq) == nil {
 				clips, err := a.applyFilterToFeed(r.Context(), &fq, userID, dedupeSeen24h)
 				if err == nil {
-					a.rankFeed(r.Context(), clips, userID, topicWeights)
+					a.rankFeed(r.Context(), clips, userID, topicWeights, feedPrefs)
+					if len(clips) > limit {
+						clips = clips[:limit]
+					}
 					writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips), "filter_id": filterID})
 					return
 				}
@@ -47,6 +63,8 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if userID != "" {
+		// freshness_bias → decay half-life: 0=672h (old ok), 0.5=168h (default), 1=24h (fresh only)
+		halfLife := 24.0 + (1.0-feedPrefs.FreshnessBias)*648.0
 		rows, err = a.db.QueryContext(r.Context(), `
 			WITH prefs AS (
 				SELECT exploration_rate, min_clip_seconds, max_clip_seconds, dedupe_seen_24h
@@ -70,12 +88,12 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			  AND c.duration_seconds >= COALESCE((SELECT min_clip_seconds FROM prefs), 5)
 			  AND c.duration_seconds <= COALESCE((SELECT max_clip_seconds FROM prefs), 120)
 			ORDER BY
-			    (c.content_score * (1.0 - COALESCE((SELECT exploration_rate FROM prefs), 0.3)))
+			    (c.content_score * EXP(-((julianday('now') - julianday(c.created_at)) * 24.0) / ?) * (1.0 - COALESCE((SELECT exploration_rate FROM prefs), 0.3)))
 			    + (CAST(ABS(RANDOM()) AS REAL) / 9223372036854775807.0
 			       * COALESCE((SELECT exploration_rate FROM prefs), 0.3))
 			    DESC
 			LIMIT ?
-		`, userID, userID, limit)
+		`, userID, userID, halfLife, fetchLimit)
 	} else {
 		rows, err = a.db.QueryContext(r.Context(), `
 			SELECT c.id, c.title, c.description, c.duration_seconds,
@@ -88,10 +106,10 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
-			ORDER BY (c.content_score * 0.7)
+			ORDER BY (c.content_score * EXP(-((julianday('now') - julianday(c.created_at)) * 24.0) / 168.0) * 0.7)
 			    + (CAST(ABS(RANDOM()) AS REAL) / 9223372036854775807.0 * 0.3) DESC
 			LIMIT ?
-		`, limit)
+		`, fetchLimit)
 	}
 
 	if err != nil {
@@ -101,7 +119,10 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	clips := scanClips(rows)
-	a.rankFeed(r.Context(), clips, userID, topicWeights)
+	a.rankFeed(r.Context(), clips, userID, topicWeights, feedPrefs)
+	if len(clips) > limit {
+		clips = clips[:limit]
+	}
 	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
 }
 

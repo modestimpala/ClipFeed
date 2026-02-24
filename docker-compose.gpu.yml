@@ -25,11 +25,11 @@ services:
     environment:
       ENABLE_AI: "true"
 
-  ollama:
+  llm:
     deploy:
       resources:
         limits:
-          cpus: "${OLLAMA_CPUS:-4}"
+          cpus: "${LLM_CPUS:-4}"
         reservations:
           devices:
             - driver: nvidia

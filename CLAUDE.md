@@ -24,7 +24,7 @@ make logs-api
 make logs-worker
 make shell-db         # sqlite3 shell into /data/clipfeed.db
 
-# GPU stack (worker + Ollama get NVIDIA GPU access)
+# GPU stack (worker + LLM get NVIDIA GPU access)
 make gpu-up           # start with GPU override
 make gpu-down
 make gpu-build        # full GPU rebuild (slow — avoid unless needed)
@@ -48,7 +48,7 @@ nginx :80
         ├── SQLite WAL (single connection, schema embedded)
         ├── MinIO :9000 (S3-compatible object storage)
         └── jobs table → Python Worker (ingestion/)
-                           └── Ollama :11434 ← Scout (scout/)
+                           └── LLM :11434 ← Scout (scout/)
 ```
 
 **Go API (`api/`)** — all files are `package main`, split by domain. The central `App` struct in `main.go` holds `db`, `minio`, `cfg`, an in-memory `TopicGraph` (refreshed every few minutes), and an `LTRModel` (loaded from `l2r_model.json` beside the DB, refreshed every 5 min). Router is Chi. Schema is embedded via `//go:embed schema.sql` and applied idempotently at startup — there is no migration runner.
@@ -61,7 +61,7 @@ Then Go post-processes: applies topic weight multipliers, embedding-based L2R re
 
 **Ingestion Worker (`ingestion/worker.py`)** — polls the `jobs` SQLite table. Pipeline per job: yt-dlp download → ffmpeg scene-split (15–90s clips) → transcode → faster-whisper transcription → KeyBERT topic extraction → sentence-transformers embedding → MinIO upload → DB update. Retry with exponential backoff (base 30s). Max concurrent jobs controlled by `MAX_CONCURRENT_JOBS` env.
 
-**Scout (`scout/worker.py`)** — uses Ollama for LLM-backed content discovery. Reads `scout_sources`, fetches candidate videos from platforms, scores them via LLM, stores in `scout_candidates`. Candidates approved via `POST /api/scout/candidates/{id}/approve` trigger ingestion.
+**Scout (`scout/worker.py`)** — LLM-backed content discovery. Reads `scout_sources`, fetches candidate videos from platforms, scores them via LLM, stores in `scout_candidates`. Candidates approved via `POST /api/scout/candidates/{id}/approve` trigger ingestion.
 
 **Frontend (`web/src/`)** — feature-first layout:
 - `app/` — routing and composition only (`App.jsx` manages auth state and tab switching)

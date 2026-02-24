@@ -233,7 +233,7 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	       COALESCE((julianday('now') - julianday(c.created_at)) * 24.0, 0)
 	FROM clips c LEFT JOIN sources s ON c.source_id = s.id
 	WHERE ` + strings.Join(where, " AND ") + `
-	ORDER BY c.content_score DESC LIMIT 20`
+	ORDER BY c.content_score DESC LIMIT 60`
 
 	args = append(args)
 	rows, err := a.db.QueryContext(ctx, query, args...)

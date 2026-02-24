@@ -131,7 +131,14 @@ type ltrUserStats struct {
 	TopicAffinities       map[string]struct{}
 }
 
-func (a *App) rankFeed(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64) {
+// FeedPrefs holds per-user algorithm tuning preferences.
+type FeedPrefs struct {
+	DiversityMix  float64 // 0 = no diversity reranking, 1 = maximum diversity
+	TrendingBoost bool    // whether to boost trending clips
+	FreshnessBias float64 // 0 = old content ok, 1 = strongly prefer fresh
+}
+
+func (a *App) rankFeed(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64, fp FeedPrefs) {
 	if len(clips) == 0 {
 		return
 	}
@@ -142,12 +149,173 @@ func (a *App) rankFeed(ctx context.Context, clips []map[string]interface{}, user
 		a.applyTopicBoost(ctx, clips, userID, topicWeights)
 	}
 
+	if fp.TrendingBoost {
+		a.applyTrendingBoost(ctx, clips)
+	}
+
+	if fp.DiversityMix > 0 {
+		a.applyDiversityPenalty(clips, fp.DiversityMix)
+	}
+
 	for _, clip := range clips {
 		delete(clip, "_source_id")
 		delete(clip, "_transcript_length")
 		delete(clip, "_file_size_bytes")
 		delete(clip, "_age_hours")
 		delete(clip, "_l2r_score")
+		delete(clip, "_score")
+	}
+}
+
+func (a *App) applyDiversityPenalty(clips []map[string]interface{}, diversityMix float64) {
+	if len(clips) <= 1 {
+		return
+	}
+
+	// Scale penalty strengths by diversity_mix: 0=no penalty, 1=max penalty
+	// Base decay rates at mix=1: topic 0.6, channel 0.5, platform 0.84
+	topicDecay := 1.0 - diversityMix*0.4
+	channelDecay := 1.0 - diversityMix*0.5
+	platformDecay := 1.0 - diversityMix*0.16
+
+	candidates := make([]map[string]interface{}, len(clips))
+	copy(candidates, clips)
+
+	for i, clip := range candidates {
+		score := float64(len(candidates) - i)
+		if s, ok := clip["_l2r_score"].(float64); ok {
+			score = s
+		} else if s, ok := clip["_score"].(float64); ok {
+			score = s
+		}
+		if score <= 0 {
+			score = 0.0001
+		}
+		clip["_div_score"] = score
+	}
+
+	seenTopics := make(map[string]int)
+	seenChannels := make(map[string]int)
+	seenPlatforms := make(map[string]int)
+
+	for i := 0; i < len(clips); i++ {
+		bestIdx := 0
+		bestScore := -1.0
+
+		for j, clip := range candidates {
+			score := clip["_div_score"].(float64)
+
+			topicPenalty := 1.0
+			if topics, ok := clip["topics"].([]string); ok {
+				for _, t := range topics {
+					if count, ok := seenTopics[t]; ok {
+						topicPenalty *= math.Pow(topicDecay, float64(count))
+					}
+				}
+			}
+
+			channelPenalty := 1.0
+			if ch, ok := clip["channel_name"].(*string); ok && ch != nil && *ch != "" {
+				if count, ok := seenChannels[*ch]; ok {
+					channelPenalty *= math.Pow(channelDecay, float64(count))
+				}
+			}
+
+			// Platform diversity: gentle penalty to avoid all-YouTube or all-TikTok feeds
+			platformPenalty := 1.0
+			if p, ok := clip["platform"].(*string); ok && p != nil && *p != "" {
+				if count, ok := seenPlatforms[*p]; ok {
+					platformPenalty *= math.Pow(platformDecay, float64(count))
+				}
+			}
+
+			finalScore := score * topicPenalty * channelPenalty * platformPenalty
+			if finalScore > bestScore {
+				bestScore = finalScore
+				bestIdx = j
+			}
+		}
+
+		bestClip := candidates[bestIdx]
+		clips[i] = bestClip
+
+		if topics, ok := bestClip["topics"].([]string); ok {
+			for _, t := range topics {
+				seenTopics[t]++
+			}
+		}
+		if ch, ok := bestClip["channel_name"].(*string); ok && ch != nil && *ch != "" {
+			seenChannels[*ch]++
+		}
+		if p, ok := bestClip["platform"].(*string); ok && p != nil && *p != "" {
+			seenPlatforms[*p]++
+		}
+
+		candidates = append(candidates[:bestIdx], candidates[bestIdx+1:]...)
+	}
+
+	for _, clip := range clips {
+		delete(clip, "_div_score")
+	}
+}
+
+// applyTrendingBoost applies a velocity-based boost to clips with recent engagement.
+// Inspired by TikTok/YouTube trending signals: content gaining traction gets a lift.
+func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interface{}) {
+	if len(clips) == 0 {
+		return
+	}
+
+	var ids []string
+	for _, c := range clips {
+		if id, ok := c["id"].(string); ok {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	ph := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		ph[i] = "?"
+		args[i] = id
+	}
+
+	rows, err := a.db.QueryContext(ctx,
+		`SELECT clip_id, COUNT(*) FROM interactions
+		 WHERE clip_id IN (`+strings.Join(ph, ",")+`)
+		   AND created_at > datetime('now', '-6 hours')
+		 GROUP BY clip_id`, args...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	velocity := make(map[string]float64)
+	for rows.Next() {
+		var cid string
+		var count float64
+		rows.Scan(&cid, &count)
+		velocity[cid] = count
+	}
+
+	if len(velocity) == 0 {
+		return
+	}
+
+	for _, clip := range clips {
+		id, _ := clip["id"].(string)
+		if v, ok := velocity[id]; ok && v > 0 {
+			// Log-scaled trending boost: avoids runaway popularity while rewarding traction
+			trendBoost := 1.0 + math.Log1p(v)*0.1
+			if s, ok := clip["_l2r_score"].(float64); ok {
+				clip["_l2r_score"] = s * trendBoost
+			} else if s, ok := clip["_score"].(float64); ok {
+				clip["_score"] = s * trendBoost
+			}
+		}
 	}
 }
 
@@ -269,7 +437,15 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 	}
 
 	rows, err := a.db.QueryContext(ctx, `
-		SELECT COALESCE(c.source_id, ''), COUNT(*)
+		SELECT COALESCE(c.source_id, ''),
+		       SUM(CASE
+		           WHEN i.action IN ('dislike', 'skip') THEN -0.5
+		           WHEN i.action IN ('like', 'save', 'share') THEN 2.0
+		           WHEN i.action = 'watch_full' THEN 1.5
+		           WHEN COALESCE(i.watch_percentage, 0) >= 0.75 THEN 1.0 + COALESCE(i.watch_percentage, 0)
+		           WHEN COALESCE(i.watch_percentage, 0) < 0.25 AND COALESCE(i.watch_percentage, 0) > 0 THEN -0.3
+		           ELSE 0.5
+		       END)
 		FROM interactions i
 		JOIN clips c ON c.id = i.clip_id
 		WHERE i.user_id = ?
@@ -278,9 +454,9 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 	if err == nil {
 		for rows.Next() {
 			var sourceID string
-			var count float64
-			if rows.Scan(&sourceID, &count) == nil {
-				stats.ChannelAffinity[sourceID] = count
+			var affinity float64
+			if rows.Scan(&sourceID, &affinity) == nil {
+				stats.ChannelAffinity[sourceID] = affinity
 			}
 		}
 		rows.Close()

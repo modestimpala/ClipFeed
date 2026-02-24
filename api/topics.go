@@ -15,6 +15,22 @@ import (
 const topicDecayPerHop = 0.7
 const maxLateralHops = 2
 
+// normalizeTopicStem reduces topic names to a canonical stem for consolidation.
+// Conservative: only handles plurals and separator normalization to avoid false merges.
+func normalizeTopicStem(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.ReplaceAll(s, "-", " ")
+	s = strings.ReplaceAll(s, "_", " ")
+	// "technologies" → "technology", "categories" → "category"
+	if len(s) > 4 && strings.HasSuffix(s, "ies") {
+		s = s[:len(s)-3] + "y"
+	} else if len(s) > 3 && s[len(s)-1] == 's' && s[len(s)-2] != 's' && s[len(s)-2] != 'u' && s[len(s)-2] != 'i' {
+		// "cars" → "car", "topics" → "topic" (but not "chess", "virus", "crisis")
+		s = s[:len(s)-1]
+	}
+	return strings.Join(strings.Fields(s), " ")
+}
+
 type TopicNode struct {
 	ID        string
 	Name      string
@@ -32,11 +48,12 @@ type TopicEdge struct {
 }
 
 type TopicGraph struct {
-	nodes    map[string]*TopicNode
-	bySlug   map[string]*TopicNode
-	byName   map[string]*TopicNode
-	children map[string][]string
-	edges    map[string][]TopicEdge
+	nodes     map[string]*TopicNode
+	bySlug    map[string]*TopicNode
+	byName    map[string]*TopicNode
+	children  map[string][]string
+	edges     map[string][]TopicEdge
+	canonical map[string]string // topic_id → canonical topic_id for consolidated topics
 }
 
 func (g *TopicGraph) resolveByName(name string) *TopicNode {
@@ -62,6 +79,12 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 
 		if w, ok := userAffinities[ctID]; ok {
 			bestBoost = w
+		}
+		// Check canonical form for consolidated topics
+		if canonID, ok := g.canonical[ctID]; ok {
+			if w, ok := userAffinities[canonID]; ok && w > bestBoost {
+				bestBoost = w
+			}
 		}
 
 		node := g.nodes[ctID]
@@ -163,11 +186,12 @@ func (a *App) getTopicGraph() *TopicGraph {
 
 func (a *App) loadTopicGraph() *TopicGraph {
 	g := &TopicGraph{
-		nodes:    make(map[string]*TopicNode),
-		bySlug:   make(map[string]*TopicNode),
-		byName:   make(map[string]*TopicNode),
-		children: make(map[string][]string),
-		edges:    make(map[string][]TopicEdge),
+		nodes:     make(map[string]*TopicNode),
+		bySlug:    make(map[string]*TopicNode),
+		byName:    make(map[string]*TopicNode),
+		children:  make(map[string][]string),
+		edges:     make(map[string][]TopicEdge),
+		canonical: make(map[string]string),
 	}
 
 	rows, err := a.db.Query("SELECT id, name, slug, path, parent_id, depth, clip_count FROM topics")
@@ -217,6 +241,31 @@ func (a *App) loadTopicGraph() *TopicGraph {
 	}
 
 	log.Printf("Topic graph loaded: %d nodes, %d edges", len(g.nodes), edgeCount)
+
+	// Topic consolidation: group by normalized stem, pick highest clip_count as canonical
+	stemGroups := make(map[string][]*TopicNode)
+	for _, node := range g.nodes {
+		stem := normalizeTopicStem(node.Name)
+		stemGroups[stem] = append(stemGroups[stem], node)
+	}
+	mergeCount := 0
+	for _, group := range stemGroups {
+		if len(group) <= 1 {
+			continue
+		}
+		sort.Slice(group, func(i, j int) bool {
+			return group[i].ClipCount > group[j].ClipCount
+		})
+		canon := group[0]
+		for _, node := range group[1:] {
+			g.canonical[node.ID] = canon.ID
+			mergeCount++
+		}
+	}
+	if mergeCount > 0 {
+		log.Printf("Topic consolidation: %d topics merged into canonical forms", mergeCount)
+	}
+
 	return g
 }
 
@@ -263,6 +312,16 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 					userAffinities[tid] = w
 				}
 				rows.Close()
+			}
+		}
+		// Propagate affinities to canonical forms so consolidated topics match
+		if len(g.canonical) > 0 {
+			for tid, w := range userAffinities {
+				if canonID, ok := g.canonical[tid]; ok {
+					if existing, exists := userAffinities[canonID]; !exists || w > existing {
+						userAffinities[canonID] = w
+					}
+				}
 			}
 		}
 	}
@@ -372,9 +431,6 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 		sj, _ := clips[j]["_score"].(float64)
 		return si > sj
 	})
-	for _, clip := range clips {
-		delete(clip, "_score")
-	}
 }
 
 func (a *App) handleGetTopics(w http.ResponseWriter, r *http.Request) {

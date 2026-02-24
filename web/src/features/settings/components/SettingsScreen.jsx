@@ -19,6 +19,9 @@ export function SettingsScreen({ onLogout }) {
     autoplay: true,
     topic_weights: {},
     scout_threshold: 6.0,
+    diversity_mix: 0.5,
+    trending_boost: true,
+    freshness_bias: 0.5,
   });
 
   useEffect(() => {
@@ -111,6 +114,65 @@ export function SettingsScreen({ onLogout }) {
           <button
             className={`toggle-switch ${prefs.dedupe_seen_24h ? 'on' : ''}`}
             onClick={() => handleChange('dedupe_seen_24h', !prefs.dedupe_seen_24h)}
+          >
+            <div className="toggle-knob" />
+          </button>
+        </div>
+      </div>
+
+      <div className="settings-section">
+        <h3>Algorithm</h3>
+
+        <div className="slider-row">
+          <div className="slider-header">
+            <span className="slider-label">Feed Diversity</span>
+            <span className="slider-value">{Math.round(prefs.diversity_mix * 100)}%</span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={prefs.diversity_mix}
+            onChange={(e) => handleChange('diversity_mix', parseFloat(e.target.value))}
+          />
+          <div className="slider-hint-row">
+            <span>Best matches first</span>
+            <span>Mix it up</span>
+          </div>
+          <div className="slider-description">Prevents your feed from being dominated by one topic or channel</div>
+        </div>
+
+        <div className="slider-row">
+          <div className="slider-header">
+            <span className="slider-label">Freshness</span>
+            <span className="slider-value">
+              {prefs.freshness_bias <= 0.2 ? 'Archive' : prefs.freshness_bias <= 0.4 ? 'Relaxed' : prefs.freshness_bias <= 0.6 ? 'Balanced' : prefs.freshness_bias <= 0.8 ? 'Fresh' : 'Breaking'}
+            </span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.1"
+            value={prefs.freshness_bias}
+            onChange={(e) => handleChange('freshness_bias', parseFloat(e.target.value))}
+          />
+          <div className="slider-hint-row">
+            <span>Old content is fine</span>
+            <span>Only the latest</span>
+          </div>
+          <div className="slider-description">How quickly older clips fade from your feed</div>
+        </div>
+
+        <div className="setting-row">
+          <div className="setting-label-group">
+            <span className="setting-label">Trending Boost</span>
+            <span className="setting-sublabel">Surface clips gaining traction</span>
+          </div>
+          <button
+            className={`toggle-switch ${prefs.trending_boost ? 'on' : ''}`}
+            onClick={() => handleChange('trending_boost', !prefs.trending_boost)}
           >
             <div className="toggle-knob" />
           </button>

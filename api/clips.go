@@ -197,7 +197,7 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(getEnv("LLM_BASE_URL", "")), "/")
 	if baseURL == "" {
 		if provider == "" || provider == "ollama" {
-			baseURL = strings.TrimRight(getEnv("OLLAMA_URL", "http://ollama:11434"), "/")
+			baseURL = strings.TrimRight(getEnv("LLM_URL", "http://llm:11434"), "/")
 		} else if provider == "anthropic" {
 			baseURL = "https://api.anthropic.com/v1"
 		} else {
@@ -233,7 +233,7 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 		return strings.TrimSpace(result.Response), model, nil
 	}
 
-	apiKey := strings.TrimSpace(getEnv("LLM_API_KEY", getEnv("OPENAI_API_KEY", getEnv("ANTHROPIC_API_KEY", ""))))
+	apiKey := strings.TrimSpace(getEnv("LLM_API_KEY", ""))
 	if apiKey == "" {
 		return "", model, fmt.Errorf("missing API key")
 	}
