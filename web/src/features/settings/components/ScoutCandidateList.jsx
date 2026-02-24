@@ -37,12 +37,54 @@ export function ScoutCandidateList() {
 
   useEffect(() => { fetchCandidates(); }, [fetchCandidates]);
 
-  // Auto-refresh pending tab every 5s
+  // Auto-refresh pending tab with adaptive backoff
   useEffect(() => {
     if (tab !== 'pending') return;
-    const id = setInterval(fetchCandidates, 5000);
-    return () => clearInterval(id);
-  }, [tab, fetchCandidates]);
+
+    let cancelled = false;
+    let timeoutId = null;
+    let delayMs = 5000;
+
+    const isVisible = () => document.visibilityState === 'visible';
+
+    const schedule = (nextDelay) => {
+      if (cancelled) return;
+      timeoutId = setTimeout(tick, nextDelay);
+    };
+
+    const tick = async () => {
+      try {
+        const data = await api.getScoutCandidates('pending');
+        if (cancelled) return;
+        setCandidates(data.candidates || []);
+        setLoading(false);
+
+        delayMs = isVisible() ? 5000 : 30000;
+      } catch {
+        if (cancelled) return;
+        setLoading(false);
+        delayMs = Math.min(delayMs * 2, 60000);
+      } finally {
+        schedule(delayMs);
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (!isVisible()) return;
+      if (timeoutId) clearTimeout(timeoutId);
+      delayMs = 5000;
+      tick();
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [tab]);
 
   function handleApprove(id) {
     setCandidates((prev) => prev.filter((c) => c.id !== id));

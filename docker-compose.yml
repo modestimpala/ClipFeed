@@ -38,6 +38,10 @@ services:
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
       JWT_SECRET: ${JWT_SECRET:-supersecretkey}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
     volumes:
@@ -68,6 +72,10 @@ services:
       WHISPER_THREADS: ${WHISPER_THREADS:-4}
       CLIP_TTL_DAYS: ${CLIP_TTL_DAYS:-30}
       JOB_STALE_MINUTES: ${JOB_STALE_MINUTES:-120}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
     volumes:
@@ -125,12 +133,15 @@ services:
       dockerfile: scout/Dockerfile
     container_name: clipfeed-scout
     restart: unless-stopped
-    depends_on:
-      - ollama
     environment:
       DB_PATH: /data/clipfeed.db
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      SCOUT_LLM_AUTO_PULL: "${SCOUT_LLM_AUTO_PULL:-1}"
       SCOUT_OLLAMA_AUTO_PULL: "${SCOUT_OLLAMA_AUTO_PULL:-1}"
       OLLAMA_PULL_TIMEOUT: "${OLLAMA_PULL_TIMEOUT:-900}"
       SCOUT_INTERVAL: "${SCOUT_INTERVAL:-21600}"

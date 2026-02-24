@@ -8,5 +8,6 @@ open-clip-torch==2.26.1
 Pillow==10.4.0
 numpy>=1.24.0
 requests>=2.31.0
+litellm>=1.62.0
 lightgbm>=4.3.0
 scikit-learn>=1.4.0
