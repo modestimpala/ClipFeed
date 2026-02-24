@@ -57,9 +57,9 @@ export function JobsScreen() {
 
   return (
     <div className="jobs-screen">
-      <div className="settings-title">Processing Queue</div>
+      <div className="screen-title">Processing Queue</div>
       {jobs.length === 0 && (
-        <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: 20, textAlign: 'center' }}>
+        <div className="loading-text">
           No jobs yet. Submit a video URL to get started.
         </div>
       )}

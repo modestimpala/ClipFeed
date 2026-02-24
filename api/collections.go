@@ -162,7 +162,9 @@ func (a *App) handleGetCollectionClips(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal([]byte(topicsJSON), &topics)
 		clips = append(clips, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
-			"thumbnail_key": thumbnailKey, "topics": topics, "created_at": createdAt,
+			"thumbnail_key": thumbnailKey,
+			"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbnailKey),
+			"topics": topics, "created_at": createdAt,
 			"platform": platform, "channel_name": channelName, "source_url": sourceURL,
 		})
 	}

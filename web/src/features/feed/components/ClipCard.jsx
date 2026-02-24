@@ -185,7 +185,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
           preload="auto"
           loop 
           muted={isMuted}
-          poster={clip.thumbnail_key ? `/storage/${clip.thumbnail_key}` : undefined}
+          poster={clip.thumbnail_url || undefined}
         />
       ) : (
         <div className="video-placeholder" />

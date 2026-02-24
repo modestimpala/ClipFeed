@@ -1,16 +1,9 @@
 import React, { useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { Icons } from '../../../shared/ui/icons';
+import { timeAgo } from '../../../shared/utils/formatters';
 
 const INTERVAL_OPTIONS = [6, 12, 24, 48];
-
-function timeAgo(iso) {
-  if (!iso) return 'Never';
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
 
 const TYPE_LABELS = { channel: 'Channel', playlist: 'Playlist', hashtag: 'Hashtag' };
 
@@ -70,13 +63,11 @@ export function ScoutSourceCard({ source, onUpdate, onDelete, onTrigger }) {
         </button>
 
         <button className="scout-delete-btn" onClick={() => onDelete(source.id)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" />
-          </svg>
+          <Icons.Trash />
         </button>
       </div>
 
-      <div className="scout-source-meta">Last checked {timeAgo(source.last_checked)}</div>
+      <div className="scout-source-meta">Last checked {timeAgo(source.last_checked) || 'Never'}</div>
     </div>
   );
 }

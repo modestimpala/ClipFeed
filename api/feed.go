@@ -52,6 +52,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 					if len(clips) > limit {
 						clips = clips[:limit]
 					}
+					addThumbnailURLs(clips, a.cfg.MinioBucket)
 					writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips), "filter_id": filterID})
 					return
 				}
@@ -123,6 +124,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if len(clips) > limit {
 		clips = clips[:limit]
 	}
+	addThumbnailURLs(clips, a.cfg.MinioBucket)
 	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
 }
 

@@ -88,7 +88,7 @@
 }
 
 .auth-error {
-  color: var(--accent);
+  color: var(--error);
   font-size: 13px;
   text-align: center;
 }

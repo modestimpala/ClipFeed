@@ -378,8 +378,10 @@ class Worker:
                     """, (source_id, platform)).fetchone()
                     if row:
                         cookie_str = row["cookie_str"]
+                        log.info("Job %s: using platform cookie for %s", job_id[:8], platform)
 
                 # Step 0: Fetch source metadata early so failed downloads still have context
+                log.info("Job %s: [step 0/4] fetching source metadata for %s", job_id[:8], url[:80])
                 source_metadata = self.fetch_source_metadata(url, work_path, cookie_str=cookie_str)
                 if source_metadata:
                     db.execute(
@@ -405,10 +407,14 @@ class Worker:
                     )
 
                 # Step 1: Download
+                log.info("Job %s: [step 1/4] downloading video", job_id[:8])
+                dl_start = time.time()
                 source_file = self.download(url, work_path, cookie_str=cookie_str)
+                log.info("Job %s: download complete in %.1fs — %s", job_id[:8], time.time() - dl_start, source_file.name)
                 db.execute("UPDATE sources SET status = 'processing' WHERE id = ?", (source_id,))
 
                 # Step 2: Extract metadata
+                log.info("Job %s: [step 2/4] extracting media metadata", job_id[:8])
                 media_metadata = self.extract_metadata(source_file)
                 merged_metadata = dict(source_metadata) if source_metadata else {}
                 if media_metadata:
@@ -424,9 +430,12 @@ class Worker:
                 )
 
                 # Step 3: Detect scenes and split
+                log.info("Job %s: [step 3/4] detecting scenes (duration=%.1fs)", job_id[:8], media_metadata.get("duration", 0))
                 segments = self.detect_scenes(source_file, media_metadata.get("duration", 0))
+                log.info("Job %s: detected %d segments", job_id[:8], len(segments))
 
                 # Step 4: Process each segment
+                log.info("Job %s: [step 4/4] processing %d segments (transcode, transcribe, embed, upload)", job_id[:8], len(segments))
                 clip_ids = []
                 segment_metadata = dict(media_metadata)
                 if source_metadata and source_metadata.get("title"):
@@ -446,7 +455,7 @@ class Worker:
                     "UPDATE jobs SET status = 'complete', completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), result = ? WHERE id = ?",
                     (json.dumps({"clip_ids": clip_ids, "clip_count": len(clip_ids)}), job_id),
                 )
-                log.info(f"Job {job_id} complete: {len(clip_ids)} clips created")
+                log.info("Job %s complete: %d clips created from %s", job_id[:8], len(clip_ids), url[:80])
 
             except Exception as e:
                 job_row = db.execute(
@@ -794,19 +803,25 @@ class Worker:
 
         try:
             # Transcode segment to vertical-friendly format
+            log.info("Segment %d: transcoding %.1fs-%.1fs (%.1fs)", index, start, end, duration)
             self._transcode_clip(source_file, clip_path, start, duration, metadata)
 
             # Generate thumbnail
             self._generate_thumbnail(clip_path, thumb_path)
 
             # Transcribe audio
+            log.info("Segment %d: transcribing audio", index)
             transcript = self._transcribe(clip_path)
+            log.info("Segment %d: transcript length=%d words", index, len(transcript.split()) if transcript else 0)
 
             # Extract topics
+            log.info("Segment %d: extracting topics via KeyBERT", index)
             topics = self._extract_topics(transcript, metadata.get("title", ""))
+            log.info("Segment %d: KeyBERT topics=%s", index, topics)
             topics = self._refine_topics_llm(transcript, topics)
 
             # Generate embeddings
+            log.info("Segment %d: generating embeddings (text + visual)", index)
             title_for_embed = self._generate_clip_title(transcript, metadata.get("title", ""), index)
             text_emb = self._generate_text_embedding(f"{title_for_embed} {transcript}")
             visual_emb = self._generate_visual_embedding(clip_path)
@@ -935,19 +950,27 @@ class Worker:
         """Generate a title via LLM if available, otherwise fall back to heuristics."""
         try:
             from llm_client import generate_title
+            log.info("[LLM] Generating title for segment %d via LLM (source=%r, transcript_len=%d)",
+                     index, source_title[:60] if source_title else "", len(transcript or ""))
             llm_title = generate_title(transcript, source_title)
             if llm_title and len(llm_title) > 3:
+                log.info("[LLM] Title generated for segment %d: %r", index, llm_title)
                 return llm_title
-        except Exception:
-            pass
+            log.info("[LLM] Title generation returned empty/short for segment %d — falling back to heuristic", index)
+        except Exception as e:
+            log.warning("[LLM] Title generation failed for segment %d: %s — falling back to heuristic", index, e)
 
         if transcript:
             words = transcript.split()[:10]
             if len(words) >= 3:
-                return " ".join(words) + "..."
+                fallback = " ".join(words) + "..."
+                log.debug("Title fallback (transcript excerpt) for segment %d: %r", index, fallback)
+                return fallback
 
         if source_title:
-            return f"{source_title} (Part {index + 1})"
+            fallback = f"{source_title} (Part {index + 1})"
+            log.debug("Title fallback (source title) for segment %d: %r", index, fallback)
+            return fallback
 
         return f"Clip {index + 1}"
 
@@ -957,11 +980,14 @@ class Worker:
             return topics
         try:
             from llm_client import refine_topics
+            log.info("[LLM] Refining topics via LLM: input=%s", topics)
             refined = refine_topics(transcript, topics)
             if refined and isinstance(refined, list):
+                log.info("[LLM] Topics refined: %s -> %s", topics, refined)
                 return refined
-        except Exception:
-            pass
+            log.info("[LLM] Topic refinement returned empty — keeping originals: %s", topics)
+        except Exception as e:
+            log.warning("[LLM] Topic refinement failed: %s — keeping originals: %s", e, topics)
         return topics
 
 

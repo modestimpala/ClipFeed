@@ -1,19 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
-
-function timeAgo(iso) {
-  if (!iso) return '';
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
-function truncate(str, len) {
-  if (!str) return '';
-  return str.length > len ? str.slice(0, len) + '…' : str;
-}
+import { Tabs } from '../../../shared/ui/Tabs';
+import { timeAgo, truncate } from '../../../shared/utils/formatters';
 
 const TABS = ['pending', 'ingested', 'rejected'];
 const EMPTY_MSG = {
@@ -99,17 +87,11 @@ export function ScoutCandidateList() {
 
   return (
     <div className="scout-candidates">
-      <div className="scout-pill-toggle">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            className={`scout-pill ${tab === t ? 'active' : ''}`}
-            onClick={() => setTab(t)}
-          >
-            {t.charAt(0).toUpperCase() + t.slice(1)}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        tabs={TABS.map((t) => ({ key: t, label: t.charAt(0).toUpperCase() + t.slice(1) }))}
+        activeTab={tab}
+        onChange={setTab}
+      />
 
       {loading ? (
         <div className="scout-empty">Loading…</div>

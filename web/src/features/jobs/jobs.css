@@ -37,7 +37,7 @@
 .job-status.queued { background: var(--text-muted); }
 .job-status.running { background: var(--warning); animation: pulse 1s infinite; }
 .job-status.complete { background: var(--success); }
-.job-status.failed { background: var(--accent); }
+.job-status.failed { background: var(--error); }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -97,7 +97,7 @@
 .job-status-label {
   font-weight: 500;
 }
-.job-status-label.failed { color: var(--accent); }
+.job-status-label.failed { color: var(--error); }
 .job-status-label.running { color: var(--warning); }
 .job-status-label.complete { color: var(--success); }
 
@@ -106,7 +106,7 @@
   margin-left: 20px;
   padding: 10px 12px;
   background: rgba(255, 59, 48, 0.08);
-  border-left: 2px solid var(--accent);
+  border-left: 2px solid var(--error);
   border-radius: 0 6px 6px 0;
   font-size: 13px;
   line-height: 1.5;

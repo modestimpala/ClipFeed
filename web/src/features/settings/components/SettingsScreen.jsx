@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { Icons } from '../../../shared/ui/icons';
 import { useInstallPrompt } from '../../../shared/hooks/useInstallPrompt';
 import { CookieSection } from './CookieSection';
 import { TopicWeights } from './TopicWeights';
@@ -55,7 +56,7 @@ export function SettingsScreen({ onLogout }) {
 
   return (
     <div className="settings-screen">
-      <div className="settings-title">Settings</div>
+      <div className="screen-title">Settings</div>
 
       <div className="settings-section">
         <h3>Feed Tuning</h3>
@@ -193,9 +194,7 @@ export function SettingsScreen({ onLogout }) {
         <div className="scout-nav-row" onClick={() => setSubscreen('scout')}>
           <span className="scout-nav-label">Content Scout</span>
           <span className="scout-nav-chevron">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
+            <Icons.ChevronRight />
           </span>
         </div>
       </div>

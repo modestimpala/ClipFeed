@@ -257,16 +257,17 @@ def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -
             "UPDATE scout_sources SET last_checked = datetime('now') WHERE id = ?",
             (source_id,),
         )
-        log.info("Scout source %s: discovered %d new candidates", source_id, inserted)
+        log.info("Scout source %s (%s/%s): discovered %d new candidates",
+                 source_id[:8], source_type, identifier[:40] if identifier else "", inserted)
 
 
 def evaluate_candidates(db: sqlite3.Connection) -> None:
     """Score pending candidates via LLM with lightweight curation and diversity caps."""
     if not llm_client.is_available():
-        log.info("LLM provider unavailable, skipping candidate evaluation")
+        log.info("[LLM] Provider unavailable — skipping candidate evaluation")
         return
     if not llm_client.ensure_model(auto_pull=SCOUT_LLM_AUTO_PULL):
-        log.info("LLM model/config unavailable, skipping candidate evaluation")
+        log.info("[LLM] Model/config unavailable — skipping candidate evaluation")
         return
 
     cur = db.execute(
@@ -324,14 +325,19 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
         return
 
     log.info(
-        "Evaluating %d/%d pending candidates (explore=%d, per_source<=%d, per_channel<=%d)",
+        "[LLM] Evaluating %d/%d pending candidates (exploit=%d, explore=%d, per_source<=%d, per_channel<=%d)",
         len(selected),
         len(candidates),
+        exploit_slots,
         explore_slots,
         SCOUT_MAX_LLM_PER_SOURCE,
         SCOUT_MAX_LLM_PER_CHANNEL,
     )
 
+    evaluated = 0
+    approved = 0
+    rejected = 0
+    failed = 0
     for row in selected:
         if shutdown:
             return
@@ -340,11 +346,14 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
         title = row["title"] or ""
         channel = row["channel_name"] or ""
 
+        log.info("[LLM] Scoring candidate %s: title=%r channel=%r", cand_id[:8], title[:80], channel)
         score = llm_client.evaluate_candidate(title, channel, top_topics)
         if score is None:
-            log.debug("Candidate %s left pending (LLM unavailable/parse failure)", cand_id[:8])
+            log.warning("[LLM] Candidate %s: evaluation failed (no score returned)", cand_id[:8])
+            failed += 1
             continue
 
+        evaluated += 1
         db.execute(
             "UPDATE scout_candidates SET llm_score = ? WHERE id = ?",
             (score, cand_id),
@@ -355,13 +364,20 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
                 "UPDATE scout_candidates SET status = 'approved' WHERE id = ?",
                 (cand_id,),
             )
-            log.info("Candidate %s approved (score=%.1f)", cand_id[:8], score)
+            approved += 1
+            log.info("[LLM] Candidate %s APPROVED (score=%.1f >= threshold=%.1f): %r",
+                     cand_id[:8], score, LLM_THRESHOLD, title[:80])
         else:
             db.execute(
                 "UPDATE scout_candidates SET status = 'rejected' WHERE id = ?",
                 (cand_id,),
             )
-            log.debug("Candidate %s rejected (score=%.1f)", cand_id[:8], score)
+            rejected += 1
+            log.info("[LLM] Candidate %s rejected (score=%.1f < threshold=%.1f): %r",
+                     cand_id[:8], score, LLM_THRESHOLD, title[:80])
+
+    log.info("[LLM] Evaluation cycle complete: evaluated=%d approved=%d rejected=%d failed=%d",
+             evaluated, approved, rejected, failed)
 
 
 def auto_approve(db: sqlite3.Connection) -> None:
@@ -447,11 +463,15 @@ def process_triggers(db: sqlite3.Connection) -> bool:
 
 def main():
     log.info(
-        "Scout worker started (interval=%ds, threshold=%.1f, trigger_poll=%ds, max_llm=%d, auto_pull=%s)",
+        "Scout worker started — interval=%ds threshold=%.1f trigger_poll=%ds "
+        "max_llm_per_cycle=%d max_per_source=%d max_per_channel=%d exploration=%.0f%% auto_pull=%s",
         SCOUT_INTERVAL,
         LLM_THRESHOLD,
         TRIGGER_POLL_INTERVAL,
         SCOUT_MAX_LLM_PER_CYCLE,
+        SCOUT_MAX_LLM_PER_SOURCE,
+        SCOUT_MAX_LLM_PER_CHANNEL,
+        SCOUT_EXPLORATION_RATIO * 100,
         SCOUT_LLM_AUTO_PULL,
     )
 

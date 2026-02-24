@@ -639,6 +639,7 @@ func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
 		results = append(results, scored{
 			data: map[string]interface{}{
 				"id": cid, "title": title, "thumbnail_key": thumbKey,
+				"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbKey),
 				"duration_seconds": dur, "content_score": cs, "similarity": math.Round(sim*1000) / 1000,
 			},
 			score: sim,

@@ -1,5 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { Icons } from '../../../shared/ui/icons';
+import { Tabs } from '../../../shared/ui/Tabs';
 import { ScoutSourceCard } from './ScoutSourceCard';
 import { AddScoutSourceForm } from './AddScoutSourceForm';
 import { ScoutCandidateList } from './ScoutCandidateList';
@@ -35,21 +37,19 @@ export function ScoutScreen({ onBack, threshold, onThresholdChange }) {
     <div className="scout-screen">
       <div className="scout-header">
         <button className="scout-back-btn" onClick={onBack}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
+          <Icons.ChevronLeft />
         </button>
         <span className="scout-header-title">Content Scout</span>
       </div>
 
-      <div className="scout-tabs">
-        <button className={`scout-tab ${activeTab === 'config' ? 'active' : ''}`} onClick={() => setActiveTab('config')}>
-          Config
-        </button>
-        <button className={`scout-tab ${activeTab === 'candidates' ? 'active' : ''}`} onClick={() => setActiveTab('candidates')}>
-          Candidates
-        </button>
-      </div>
+      <Tabs
+        tabs={[
+          { key: 'config', label: 'Config' },
+          { key: 'candidates', label: 'Candidates' },
+        ]}
+        activeTab={activeTab}
+        onChange={setActiveTab}
+      />
 
       {activeTab === 'config' ? (
         <div className="scout-config">
