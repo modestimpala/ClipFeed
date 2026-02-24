@@ -169,8 +169,9 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := fmt.Sprintf("Summarize this video transcript in 1-2 sentences:\n\n%s", transcript)
-	if len(prompt) > 4000 {
-		prompt = prompt[:4000]
+	if len([]rune(prompt)) > 4000 {
+		runes := []rune(prompt)
+		prompt = string(runes[:4000])
 	}
 
 	log.Printf("[LLM] Generating summary for clip %s (transcript_len=%d)", clipID, len(transcript))
@@ -237,7 +238,11 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("[LLM] Response read FAILED: %v", err)
+			return "", model, err
+		}
 		var result struct {
 			Response string `json:"response"`
 		}
@@ -291,7 +296,11 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 		}
 
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Printf("[LLM] Anthropic response read FAILED: %v", err)
+			return "", model, err
+		}
 		var result struct {
 			Content []struct {
 				Type string `json:"type"`
@@ -344,7 +353,11 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 		return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 	}
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[LLM] OpenAI response read FAILED: %v", err)
+		return "", model, err
+	}
 	var result struct {
 		Choices []struct {
 			Message struct {
