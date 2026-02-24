@@ -47,6 +47,7 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{
 		"id": id, "title": title, "description": description,
 		"duration_seconds": duration, "thumbnail_key": thumbnailKey,
+		"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbnailKey),
 		"topics": topics, "tags": tags, "content_score": score,
 		"status": status, "created_at": createdAt,
 		"width": width, "height": height, "file_size_bytes": fileSize,
@@ -148,6 +149,7 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 		`SELECT summary, model FROM clip_summaries WHERE clip_id = ?`, clipID,
 	).Scan(&summary, &model)
 	if err == nil {
+		log.Printf("[LLM] Summary cache hit for clip %s (model=%s)", clipID, model)
 		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summary, "model": model, "cached": true})
 		return
 	}
@@ -161,6 +163,7 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if transcript == "" {
+		log.Printf("[LLM] No transcript for clip %s — skipping summary", clipID)
 		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "model": "", "cached": false})
 		return
 	}
@@ -170,17 +173,21 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 		prompt = prompt[:4000]
 	}
 
+	log.Printf("[LLM] Generating summary for clip %s (transcript_len=%d)", clipID, len(transcript))
 	summaryText, modelName, err := generateSummaryWithLLM(prompt)
 	if err != nil {
+		log.Printf("[LLM] Summary generation FAILED for clip %s: %v", clipID, err)
 		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
 		return
 	}
+
+	log.Printf("[LLM] Summary generated for clip %s: model=%s summary_len=%d", clipID, modelName, len(summaryText))
 
 	if summaryText != "" {
 		if _, err := a.db.ExecContext(r.Context(),
 			`INSERT OR REPLACE INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)`,
 			clipID, summaryText, modelName); err != nil {
-			log.Printf("failed to cache summary for clip %s: %v", clipID, err)
+			log.Printf("[LLM] Failed to cache summary for clip %s: %v", clipID, err)
 		}
 	}
 
@@ -205,6 +212,9 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 		}
 	}
 
+	log.Printf("[LLM] Summary request: provider=%s model=%s base_url=%s prompt_len=%d", provider, model, baseURL, len(prompt))
+
+	start := time.Now()
 	client := &http.Client{Timeout: 60 * time.Second}
 	if provider == "" || provider == "ollama" {
 		reqBody, _ := json.Marshal(map[string]interface{}{
@@ -213,13 +223,17 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			"stream": false,
 		})
 
-		resp, err := client.Post(baseURL+"/api/generate", "application/json", strings.NewReader(string(reqBody)))
+		endpoint := baseURL + "/api/generate"
+		log.Printf("[LLM] POST %s (model=%s)", endpoint, model)
+		resp, err := client.Post(endpoint, "application/json", strings.NewReader(string(reqBody)))
 		if err != nil {
+			log.Printf("[LLM] Request FAILED: %v (elapsed=%v)", err, time.Since(start))
 			return "", model, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
+			log.Printf("[LLM] Request returned error status=%d (elapsed=%v)", resp.StatusCode, time.Since(start))
 			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 		}
 
@@ -228,13 +242,17 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			Response string `json:"response"`
 		}
 		if err := json.Unmarshal(body, &result); err != nil {
+			log.Printf("[LLM] Response parse FAILED: %v", err)
 			return "", model, err
 		}
-		return strings.TrimSpace(result.Response), model, nil
+		text := strings.TrimSpace(result.Response)
+		log.Printf("[LLM] Ollama response: model=%s elapsed=%v response_len=%d", model, time.Since(start), len(text))
+		return text, model, nil
 	}
 
 	apiKey := strings.TrimSpace(getEnv("LLM_API_KEY", ""))
 	if apiKey == "" {
+		log.Printf("[LLM] No API key configured for provider=%s", provider)
 		return "", model, fmt.Errorf("missing API key")
 	}
 
@@ -251,7 +269,9 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			"temperature": 0.2,
 		})
 
-		req, err := http.NewRequest("POST", baseURL+"/messages", strings.NewReader(string(reqBody)))
+		endpoint := baseURL + "/messages"
+		log.Printf("[LLM] POST %s (model=%s, anthropic_version=%s)", endpoint, model, anthropicVersion)
+		req, err := http.NewRequest("POST", endpoint, strings.NewReader(string(reqBody)))
 		if err != nil {
 			return "", model, err
 		}
@@ -261,11 +281,13 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 
 		resp, err := client.Do(req)
 		if err != nil {
+			log.Printf("[LLM] Anthropic request FAILED: %v (elapsed=%v)", err, time.Since(start))
 			return "", model, err
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
+			log.Printf("[LLM] Anthropic returned error status=%d (elapsed=%v)", resp.StatusCode, time.Since(start))
 			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 		}
 
@@ -277,6 +299,7 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			} `json:"content"`
 		}
 		if err := json.Unmarshal(body, &result); err != nil {
+			log.Printf("[LLM] Anthropic response parse FAILED: %v", err)
 			return "", model, err
 		}
 
@@ -287,9 +310,12 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 			}
 		}
 
-		return strings.Join(parts, " "), model, nil
+		text := strings.Join(parts, " ")
+		log.Printf("[LLM] Anthropic response: model=%s elapsed=%v response_len=%d", model, time.Since(start), len(text))
+		return text, model, nil
 	}
 
+	// OpenAI-compatible provider
 	reqBody, _ := json.Marshal(map[string]interface{}{
 		"model": model,
 		"messages": []map[string]string{{"role": "user", "content": prompt}},
@@ -297,7 +323,9 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 		"temperature": 0.2,
 	})
 
-	req, err := http.NewRequest("POST", baseURL+"/chat/completions", strings.NewReader(string(reqBody)))
+	endpoint := baseURL + "/chat/completions"
+	log.Printf("[LLM] POST %s (model=%s)", endpoint, model)
+	req, err := http.NewRequest("POST", endpoint, strings.NewReader(string(reqBody)))
 	if err != nil {
 		return "", model, err
 	}
@@ -306,11 +334,13 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Printf("[LLM] OpenAI request FAILED: %v (elapsed=%v)", err, time.Since(start))
 		return "", model, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
+		log.Printf("[LLM] OpenAI returned error status=%d (elapsed=%v)", resp.StatusCode, time.Since(start))
 		return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 	}
 
@@ -323,9 +353,11 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
+		log.Printf("[LLM] OpenAI response parse FAILED: %v", err)
 		return "", model, err
 	}
 	if len(result.Choices) == 0 {
+		log.Printf("[LLM] OpenAI returned 0 choices (elapsed=%v)", time.Since(start))
 		return "", model, nil
 	}
 

@@ -30,6 +30,12 @@ AVAILABILITY_TIMEOUT = 3
 GENERATE_TIMEOUT = 30
 PULL_TIMEOUT = int(os.getenv("LLM_PULL_TIMEOUT", "900"))
 
+# Log configuration at import time
+logger.info(
+    "[LLM] Config loaded: ENABLE_AI=%s provider=%s model=%s base_url=%s",
+    ENABLE_AI, LLM_PROVIDER, LLM_MODEL, LLM_BASE_URL or LLM_URL,
+)
+
 
 def _provider() -> str:
     return (LLM_PROVIDER or "ollama").lower()
@@ -132,31 +138,33 @@ def _extract_completion_text(response) -> str:
 def is_available() -> bool:
     """Check if configured LLM provider is reachable."""
     if not ENABLE_AI:
+        logger.info("[LLM] AI disabled (ENABLE_AI=false), skipping availability check")
         return False
 
     provider = _provider()
+    base = _base_url()
+    logger.info("[LLM] Checking availability: provider=%s base_url=%s", provider, base)
     try:
         if provider == "ollama":
-            r = requests.get(
-                f"{_base_url()}/api/tags",
-                timeout=AVAILABILITY_TIMEOUT,
-            )
+            url = f"{base}/api/tags"
+            logger.debug("[LLM] GET %s (timeout=%ds)", url, AVAILABILITY_TIMEOUT)
+            r = requests.get(url, timeout=AVAILABILITY_TIMEOUT)
         elif provider == "anthropic":
             headers = _anthropic_headers()
             if not headers.get("x-api-key"):
-                logger.debug("LLM API key missing for provider=%s", provider)
+                logger.warning("[LLM] API key missing for provider=%s — cannot check availability", provider)
                 return False
-            r = requests.get(
-                f"{_base_url()}/models",
-                headers=headers,
-                timeout=AVAILABILITY_TIMEOUT,
-            )
+            url = f"{base}/models"
+            logger.debug("[LLM] GET %s (timeout=%ds)", url, AVAILABILITY_TIMEOUT)
+            r = requests.get(url, headers=headers, timeout=AVAILABILITY_TIMEOUT)
         else:
             if not LLM_API_KEY:
-                logger.debug("LLM API key missing for provider=%s", provider)
+                logger.warning("[LLM] API key missing for provider=%s — cannot check availability", provider)
                 return False
+            url = f"{base}/models"
+            logger.debug("[LLM] GET %s (timeout=%ds)", url, AVAILABILITY_TIMEOUT)
             r = requests.get(
-                f"{_base_url()}/models",
+                url,
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {LLM_API_KEY}",
@@ -164,9 +172,10 @@ def is_available() -> bool:
                 timeout=AVAILABILITY_TIMEOUT,
             )
         r.raise_for_status()
+        logger.info("[LLM] Provider available: provider=%s status=%d", provider, r.status_code)
         return True
     except requests.RequestException as e:
-        logger.debug("LLM provider unavailable (%s): %s", provider, e)
+        logger.warning("[LLM] Provider unavailable: provider=%s base_url=%s error=%s", provider, base, e)
         return False
 
 
@@ -209,37 +218,43 @@ def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
     """Ensure model exists; Ollama can auto-pull, API providers validate key/model."""
     provider = _provider()
     model = _model(model)
+    logger.info("[LLM] Ensuring model: provider=%s model=%s auto_pull=%s", provider, model, auto_pull)
     if not model:
-        logger.warning("No LLM model configured")
+        logger.warning("[LLM] No model configured — cannot proceed")
         return False
 
     if provider != "ollama":
         if not LLM_API_KEY:
-            logger.warning("No LLM API key configured for provider=%s", provider)
+            logger.warning("[LLM] No API key configured for provider=%s — cannot use model %s", provider, model)
             return False
+        logger.info("[LLM] API-based provider=%s with model=%s — assuming available", provider, model)
         return True
 
     if model_exists(model):
+        logger.info("[LLM] Ollama model '%s' already present", model)
         return True
 
     if not auto_pull:
-        logger.warning("Ollama model '%s' is missing", model)
+        logger.warning("[LLM] Ollama model '%s' not found and auto_pull disabled", model)
         return False
 
-    logger.info("Ollama model '%s' not found; pulling now (this may take a while)", model)
+    logger.info("[LLM] Ollama model '%s' not found — pulling now (timeout=%ds)...", model, PULL_TIMEOUT)
     start = time.time()
     try:
+        pull_url = f"{_base_url()}/api/pull"
+        logger.info("[LLM] POST %s body={name: %s}", pull_url, model)
         r = requests.post(
-            f"{_base_url()}/api/pull",
+            pull_url,
             json={"name": model, "stream": False},
             timeout=PULL_TIMEOUT,
         )
         r.raise_for_status()
         elapsed = time.time() - start
-        logger.info("Ollama model '%s' pull complete in %.1fs", model, elapsed)
+        logger.info("[LLM] Ollama model '%s' pull complete in %.1fs", model, elapsed)
         return model_exists(model)
     except requests.RequestException as e:
-        logger.warning("Ollama model pull failed for '%s': %s", model, e)
+        elapsed = time.time() - start
+        logger.error("[LLM] Ollama model pull FAILED for '%s' after %.1fs: %s", model, elapsed, e)
         return False
 
 
@@ -250,20 +265,35 @@ def generate(
 ) -> str:
     """Generate text using configured provider. Returns empty string on failure."""
     model = _model(model)
+    provider = _provider()
+    prompt_preview = (prompt[:120] + "...") if len(prompt) > 120 else prompt
+    logger.info("[LLM] Generate request: provider=%s model=%s max_tokens=%d prompt_len=%d",
+                provider, model, max_tokens, len(prompt))
+    logger.debug("[LLM] Prompt preview: %s", prompt_preview)
     try:
-        provider = _provider()
         if provider != "ollama" and not LLM_API_KEY:
-            logger.warning("LLM API key missing for provider=%s", provider)
+            logger.warning("[LLM] API key missing for provider=%s — aborting generate", provider)
             return ""
 
+        params = _litellm_params(model, max_tokens)
+        logger.debug("[LLM] LiteLLM params: model=%s api_base=%s", params.get("model"), params.get("api_base"))
+
+        start = time.time()
         response = completion(
             messages=[{"role": "user", "content": prompt}],
             timeout=GENERATE_TIMEOUT,
-            **_litellm_params(model, max_tokens),
+            **params,
         )
-        return _extract_completion_text(response)
+        elapsed = time.time() - start
+
+        result = _extract_completion_text(response)
+        result_preview = (result[:150] + "...") if len(result) > 150 else result
+        logger.info("[LLM] Generate complete: provider=%s model=%s elapsed=%.2fs response_len=%d",
+                    provider, model, elapsed, len(result))
+        logger.debug("[LLM] Response preview: %s", result_preview)
+        return result
     except Exception as e:
-        logger.warning("LLM generate failed (%s): %s", _provider(), e)
+        logger.error("[LLM] Generate FAILED: provider=%s model=%s error=%s", provider, model, e)
         return ""
 
 
@@ -272,6 +302,8 @@ def generate_title(transcript: str, source_title: str = "") -> str:
     Use LLM to generate a concise clip title.
     Returns empty string on failure.
     """
+    logger.info("[LLM] Generating clip title: source_title=%r transcript_len=%d",
+                source_title[:60] if source_title else "", len(transcript or ""))
     excerpt = transcript[:500] if transcript else ""
     prompt = (
         "Generate a concise, engaging title (5-10 words) for this video clip. "
@@ -281,8 +313,11 @@ def generate_title(transcript: str, source_title: str = "") -> str:
     )
     result = generate(prompt)
     if not result:
+        logger.warning("[LLM] Title generation returned empty result")
         return ""
-    return result.strip()
+    title = result.strip()
+    logger.info("[LLM] Generated title: %r", title)
+    return title
 
 
 def refine_topics(transcript: str, keybert_topics: list) -> list:
@@ -291,6 +326,8 @@ def refine_topics(transcript: str, keybert_topics: list) -> list:
     and suggest a parent category. Returns list of topic strings.
     Returns original keybert_topics on failure.
     """
+    logger.info("[LLM] Refining topics via LLM: keybert_topics=%s transcript_len=%d",
+                keybert_topics, len(transcript or ""))
     topics_str = ", ".join(str(t) for t in keybert_topics) if keybert_topics else ""
     excerpt = transcript[:500] if transcript else ""
     prompt = (
@@ -301,12 +338,15 @@ def refine_topics(transcript: str, keybert_topics: list) -> list:
     )
     result = generate(prompt)
     if not result:
+        logger.warning("[LLM] Topic refinement returned empty — keeping original topics: %s", keybert_topics)
         return list(keybert_topics)
 
     try:
         parsed = json.loads(result)
         if isinstance(parsed, list):
-            return [str(item.get("topic", item)) for item in parsed if item]
+            refined = [str(item.get("topic", item)) for item in parsed if item]
+            logger.info("[LLM] Topics refined: %s -> %s", keybert_topics, refined)
+            return refined
     except json.JSONDecodeError:
         # Try to extract JSON from markdown or mixed response
         match = re.search(r"\[[\s\S]*?\]", result)
@@ -314,11 +354,14 @@ def refine_topics(transcript: str, keybert_topics: list) -> list:
             try:
                 parsed = json.loads(match.group(0))
                 if isinstance(parsed, list):
-                    return [str(item.get("topic", item)) for item in parsed if item]
+                    refined = [str(item.get("topic", item)) for item in parsed if item]
+                    logger.info("[LLM] Topics refined (extracted from markdown): %s -> %s", keybert_topics, refined)
+                    return refined
             except json.JSONDecodeError:
                 pass
-        logger.warning("LLM refine_topics: could not parse JSON from %r", result[:200])
+        logger.warning("[LLM] Topic refinement: could not parse JSON from response: %r", result[:200])
 
+    logger.info("[LLM] Keeping original topics (parse failed): %s", keybert_topics)
     return list(keybert_topics)
 
 
@@ -331,6 +374,8 @@ def evaluate_candidate(
     Rate relevance 1-10 given user interests.
     Returns None on request/parse failure.
     """
+    logger.info("[LLM] Evaluating candidate: title=%r channel=%r topics=%s",
+                title[:80] if title else "", channel, top_topics[:5] if top_topics else [])
     topics_str = ", ".join(str(t) for t in top_topics) if top_topics else "(none)"
     prompt = (
         f"Given these user interests: {topics_str}. "
@@ -339,15 +384,18 @@ def evaluate_candidate(
     )
     result = generate(prompt)
     if not result:
+        logger.warning("[LLM] Candidate evaluation returned empty for title=%r", title[:80] if title else "")
         return None
 
     match = re.search(r"(\d+(?:\.\d+)?)", result.strip())
     if match:
         try:
             score = float(match.group(1))
-            return max(0.0, min(10.0, score))
+            score = max(0.0, min(10.0, score))
+            logger.info("[LLM] Candidate scored: %.1f — title=%r channel=%r", score, title[:60] if title else "", channel)
+            return score
         except ValueError:
             pass
 
-    logger.warning("LLM evaluate_candidate: could not parse score from %r", result[:100])
+    logger.warning("[LLM] Could not parse score from LLM response: %r (title=%r)", result[:100], title[:60] if title else "")
     return None

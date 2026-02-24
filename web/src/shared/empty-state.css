@@ -19,3 +19,21 @@
   line-height: 1.5;
   max-width: 280px;
 }
+
+.empty-state--inline {
+  height: auto;
+  padding: 40px 0;
+}
+
+.loading-text {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 20px;
+  text-align: center;
+}
+
+.screen-title {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 24px;
+}

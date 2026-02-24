@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
+import { Tabs } from '../../../shared/ui/Tabs';
+import { ConfirmDialog } from '../../../shared/ui/ConfirmDialog';
 
 function SavedClipsList() {
   const [clips, setClips] = useState([]);
@@ -20,12 +22,12 @@ function SavedClipsList() {
   }
 
   if (loading) {
-    return <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: 20, textAlign: 'center' }}>Loading...</div>;
+    return <div className="loading-text">Loading...</div>;
   }
 
   if (!clips.length) {
     return (
-      <div className="empty-state" style={{ height: 'auto', padding: '40px 0' }}>
+      <div className="empty-state empty-state--inline">
         <h2>Nothing saved yet</h2>
         <p>Tap the bookmark icon on any clip to save it here.</p>
       </div>
@@ -37,8 +39,8 @@ function SavedClipsList() {
       {clips.map((clip) => (
         <div key={clip.id} className="saved-card">
           <div className="saved-thumb">
-            {clip.thumbnail_key && (
-              <img src={`/storage/${clip.thumbnail_key}`} alt={clip.title} loading="lazy" />
+            {clip.thumbnail_url && (
+              <img src={clip.thumbnail_url} alt={clip.title} loading="lazy" />
             )}
             <div className="saved-duration">{Math.round(clip.duration_seconds)}s</div>
           </div>
@@ -99,11 +101,11 @@ function CollectionDetail({ collection, onBack }) {
       {collection.description && <p className="collection-detail-desc">{collection.description}</p>}
 
       {loading && (
-        <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: 20, textAlign: 'center' }}>Loading...</div>
+        <div className="loading-text">Loading...</div>
       )}
 
       {!loading && clips.length === 0 && (
-        <div className="empty-state" style={{ height: 'auto', padding: '40px 0' }}>
+        <div className="empty-state empty-state--inline">
           <h2>Empty collection</h2>
           <p>Long-press the bookmark on any clip or tap the folder icon to add clips here.</p>
         </div>
@@ -114,8 +116,8 @@ function CollectionDetail({ collection, onBack }) {
           {clips.map((clip) => (
             <div key={clip.id} className="saved-card">
               <div className="saved-thumb">
-                {clip.thumbnail_key && (
-                  <img src={`/storage/${clip.thumbnail_key}`} alt={clip.title} loading="lazy" />
+                {clip.thumbnail_url && (
+                  <img src={clip.thumbnail_url} alt={clip.title} loading="lazy" />
                 )}
                 <div className="saved-duration">{Math.round(clip.duration_seconds)}s</div>
               </div>
@@ -142,6 +144,7 @@ function CollectionDetail({ collection, onBack }) {
 function CollectionsList({ onSelect }) {
   const [collections, setCollections] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deleteTarget, setDeleteTarget] = useState(null);
 
   useEffect(() => {
     api.getCollections()
@@ -152,19 +155,24 @@ function CollectionsList({ onSelect }) {
 
   function handleDelete(e, colId) {
     e.stopPropagation();
-    if (!confirm('Delete this collection?')) return;
+    setDeleteTarget(colId);
+  }
+
+  function confirmDelete() {
+    const colId = deleteTarget;
+    setDeleteTarget(null);
     api.deleteCollection(colId)
       .then(() => setCollections((prev) => prev.filter((c) => c.id !== colId)))
       .catch(console.error);
   }
 
   if (loading) {
-    return <div style={{ color: 'var(--text-dim)', fontSize: 14, padding: 20, textAlign: 'center' }}>Loading...</div>;
+    return <div className="loading-text">Loading...</div>;
   }
 
   if (!collections.length) {
     return (
-      <div className="empty-state" style={{ height: 'auto', padding: '40px 0' }}>
+      <div className="empty-state empty-state--inline">
         <h2>No collections yet</h2>
         <p>Long-press the bookmark on any clip or tap the folder icon to create one.</p>
       </div>
@@ -172,22 +180,32 @@ function CollectionsList({ onSelect }) {
   }
 
   return (
-    <div className="collections-grid">
-      {collections.map((col) => (
-        <button key={col.id} className="collection-card" onClick={() => onSelect(col)}>
-          <div className="collection-card-icon"><Icons.Folder /></div>
-          <div className="collection-card-info">
-            <div className="collection-card-title">{col.title}</div>
-            <div className="collection-card-count">
-              {col.clip_count} clip{col.clip_count !== 1 ? 's' : ''}
+    <>
+      <div className="collections-grid">
+        {collections.map((col) => (
+          <button key={col.id} className="collection-card" onClick={() => onSelect(col)}>
+            <div className="collection-card-icon"><Icons.Folder /></div>
+            <div className="collection-card-info">
+              <div className="collection-card-title">{col.title}</div>
+              <div className="collection-card-count">
+                {col.clip_count} clip{col.clip_count !== 1 ? 's' : ''}
+              </div>
             </div>
-          </div>
-          <button className="collection-card-delete" onClick={(e) => handleDelete(e, col.id)} title="Delete">
-            <Icons.Trash />
+            <button className="collection-card-delete" onClick={(e) => handleDelete(e, col.id)} title="Delete">
+              <Icons.Trash />
+            </button>
           </button>
-        </button>
-      ))}
-    </div>
+        ))}
+      </div>
+      {deleteTarget && (
+        <ConfirmDialog
+          title="Delete collection?"
+          message="This will remove the collection but won't delete the clips inside it."
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      )}
+    </>
   );
 }
 
@@ -197,17 +215,17 @@ export function SavedScreen() {
 
   return (
     <div className="saved-screen">
-      <div className="settings-title">Library</div>
+      <div className="screen-title">Library</div>
 
       {!selectedCollection && (
-        <div className="saved-tabs">
-          <button className={`saved-tab ${tab === 'clips' ? 'active' : ''}`} onClick={() => setTab('clips')}>
-            Saved Clips
-          </button>
-          <button className={`saved-tab ${tab === 'collections' ? 'active' : ''}`} onClick={() => setTab('collections')}>
-            Collections
-          </button>
-        </div>
+        <Tabs
+          tabs={[
+            { key: 'clips', label: 'Saved Clips' },
+            { key: 'collections', label: 'Collections' },
+          ]}
+          activeTab={tab}
+          onChange={setTab}
+        />
       )}
 
       {selectedCollection ? (

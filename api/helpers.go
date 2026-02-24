@@ -49,6 +49,25 @@ func scanClips(rows *sql.Rows) []map[string]interface{} {
 	return clips
 }
 
+// thumbnailURL builds the browser-facing URL for a MinIO object.
+// path = "/storage/{bucket}/{key}" which nginx rewrites to /{bucket}/{key}
+// and MinIO resolves as bucket + object-key.
+func thumbnailURL(bucket, key string) string {
+	if key == "" {
+		return ""
+	}
+	return "/storage/" + bucket + "/" + key
+}
+
+// addThumbnailURLs enriches clip maps with a thumbnail_url field.
+func addThumbnailURLs(clips []map[string]interface{}, bucket string) {
+	for _, clip := range clips {
+		if key, ok := clip["thumbnail_key"].(string); ok && key != "" {
+			clip["thumbnail_url"] = thumbnailURL(bucket, key)
+		}
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

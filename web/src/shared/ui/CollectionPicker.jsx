@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../api/clipfeedApi';
+import { BottomSheet } from './BottomSheet';
 import { Icons } from './icons';
 
 export function CollectionPicker({ clipId, onClose }) {
@@ -45,8 +46,7 @@ export function CollectionPicker({ clipId, onClose }) {
   }
 
   return (
-    <div className="collection-picker-backdrop" onClick={onClose}>
-      <div className="collection-picker" onClick={(e) => e.stopPropagation()}>
+    <BottomSheet onClose={onClose} showHandle={false} className="collection-picker">
 
         {savedMsg ? (
           <div className="collection-picker-saved">
@@ -102,7 +102,6 @@ export function CollectionPicker({ clipId, onClose }) {
             </div>
           </>
         )}
-      </div>
-    </div>
+    </BottomSheet>
   );
 }

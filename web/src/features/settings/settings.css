@@ -207,7 +207,7 @@ input[type="range"] {
 }
 
 .cookie-meta-error {
-  color: var(--accent);
+  color: var(--error);
 }
 
 .cookie-pill {
@@ -276,7 +276,7 @@ input[type="range"] {
 }
 
 .cookie-status-error {
-  color: var(--accent);
+  color: var(--error);
 }
 
 .install-row {

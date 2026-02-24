@@ -24,6 +24,11 @@
   align-items: center;
 }
 
+.scout-back-btn svg {
+  width: 20px;
+  height: 20px;
+}
+
 .scout-header-title {
   font-size: 20px;
   font-weight: 700;
@@ -455,4 +460,9 @@
   color: var(--text-dim);
   display: flex;
   align-items: center;
+}
+
+.scout-nav-chevron svg {
+  width: 16px;
+  height: 16px;
 }

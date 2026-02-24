@@ -83,3 +83,16 @@
   font-size: 12px;
   color: var(--text-dim);
 }
+
+.ingest-result {
+  margin-top: 16px;
+  font-size: 14px;
+}
+
+.ingest-result--success {
+  color: var(--success);
+}
+
+.ingest-result--error {
+  color: var(--error);
+}

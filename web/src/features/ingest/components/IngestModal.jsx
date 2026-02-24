@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { BottomSheet } from '../../../shared/ui/BottomSheet';
 
 export function IngestModal({ onClose }) {
   const [url, setUrl] = useState('');
@@ -22,9 +23,7 @@ export function IngestModal({ onClose }) {
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-sheet">
-        <div className="modal-handle" />
+    <BottomSheet onClose={onClose}>
         <div className="modal-title">Add Content</div>
         <div className="ingest-platforms">
           <span className="platform-tag">YouTube</span>
@@ -47,16 +46,15 @@ export function IngestModal({ onClose }) {
           </button>
         </form>
         {result && !result.error && (
-          <div style={{ marginTop: 16, color: 'var(--success)', fontSize: 14 }}>
+          <div className="ingest-result ingest-result--success">
             Queued for processing (Job: {result.job_id?.slice(0, 8)}...)
           </div>
         )}
         {result?.error && (
-          <div style={{ marginTop: 16, color: 'var(--accent)', fontSize: 14 }}>
+          <div className="ingest-result ingest-result--error">
             {result.error}
           </div>
         )}
-      </div>
-    </div>
+    </BottomSheet>
   );
 }
