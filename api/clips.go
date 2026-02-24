@@ -169,8 +169,7 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	prompt := fmt.Sprintf("Summarize this video transcript in 1-2 sentences:\n\n%s", transcript)
-	if len([]rune(prompt)) > 4000 {
-		runes := []rune(prompt)
+	if runes := []rune(prompt); len(runes) > 4000 {
 		prompt = string(runes[:4000])
 	}
 
