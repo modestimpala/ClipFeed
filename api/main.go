@@ -120,6 +120,7 @@ func main() {
 	for _, m := range []string{
 		"ALTER TABLE user_preferences ADD COLUMN scout_threshold REAL DEFAULT 6.0",
 		"ALTER TABLE user_preferences ADD COLUMN dedupe_seen_24h INTEGER DEFAULT 1",
+		"ALTER TABLE user_preferences ADD COLUMN scout_auto_ingest INTEGER DEFAULT 1",
 		"ALTER TABLE scout_sources ADD COLUMN force_check INTEGER DEFAULT 0",
 	} {
 		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
@@ -258,6 +259,7 @@ func main() {
 		r.Post("/api/scout/sources/{id}/trigger", app.handleTriggerScoutSource)
 		r.Get("/api/scout/candidates", app.handleListScoutCandidates)
 		r.Post("/api/scout/candidates/{id}/approve", app.handleApproveCandidate)
+		r.Get("/api/scout/profile", app.handleGetScoutProfile)
 	})
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}

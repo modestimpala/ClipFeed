@@ -17,7 +17,7 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 	var explorationRate, scoutThreshold, diversityMix, freshnessBias float64
 	var topicWeightsJSON string
 	var minClip, maxClip int
-	var autoplay, dedupeSeen24h, trendingBoost int
+	var autoplay, dedupeSeen24h, trendingBoost, scoutAutoIngest int
 
 	err := a.db.QueryRowContext(r.Context(), `
 		SELECT u.username, u.email, u.display_name, u.avatar_url, u.created_at,
@@ -28,6 +28,7 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 		       COALESCE(p.max_clip_seconds, 120),
 		       COALESCE(p.autoplay, 1),
 		       COALESCE(p.scout_threshold, 6.0),
+		       COALESCE(p.scout_auto_ingest, 1),
 		       COALESCE(p.diversity_mix, 0.5),
 		       COALESCE(p.trending_boost, 1),
 		       COALESCE(p.freshness_bias, 0.5)
@@ -36,7 +37,7 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 		WHERE u.id = ?
 	`, userID).Scan(&username, &email, &displayName, &avatarURL, &createdAt,
 		&explorationRate, &topicWeightsJSON, &dedupeSeen24h, &minClip, &maxClip, &autoplay, &scoutThreshold,
-		&diversityMix, &trendingBoost, &freshnessBias)
+		&scoutAutoIngest, &diversityMix, &trendingBoost, &freshnessBias)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "user not found"})
@@ -54,16 +55,17 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 		"display_name": displayName, "avatar_url": avatarURL,
 		"created_at": createdAt,
 		"preferences": map[string]interface{}{
-			"exploration_rate": explorationRate,
-			"topic_weights":    topicWeights,
-			"dedupe_seen_24h":  dedupeSeen24h == 1,
-			"min_clip_seconds": minClip,
-			"max_clip_seconds": maxClip,
-			"autoplay":         autoplay == 1,
-			"scout_threshold":  scoutThreshold,
-			"diversity_mix":    diversityMix,
-			"trending_boost":   trendingBoost == 1,
-			"freshness_bias":   freshnessBias,
+			"exploration_rate":   explorationRate,
+			"topic_weights":      topicWeights,
+			"dedupe_seen_24h":    dedupeSeen24h == 1,
+			"min_clip_seconds":   minClip,
+			"max_clip_seconds":   maxClip,
+			"autoplay":           autoplay == 1,
+			"scout_threshold":    scoutThreshold,
+			"scout_auto_ingest":  scoutAutoIngest == 1,
+			"diversity_mix":      diversityMix,
+			"trending_boost":     trendingBoost == 1,
+			"freshness_bias":     freshnessBias,
 		},
 	})
 }
@@ -106,20 +108,21 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	topicWeights, _ := json.Marshal(prefs["topic_weights"])
 
 	_, err := a.db.ExecContext(r.Context(), `
-		INSERT INTO user_preferences (user_id, exploration_rate, topic_weights, dedupe_seen_24h, min_clip_seconds, max_clip_seconds, autoplay, scout_threshold, diversity_mix, trending_boost, freshness_bias)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO user_preferences (user_id, exploration_rate, topic_weights, dedupe_seen_24h, min_clip_seconds, max_clip_seconds, autoplay, scout_threshold, scout_auto_ingest, diversity_mix, trending_boost, freshness_bias)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
-			exploration_rate = COALESCE(excluded.exploration_rate, user_preferences.exploration_rate),
-			topic_weights    = COALESCE(excluded.topic_weights,    user_preferences.topic_weights),
-			dedupe_seen_24h  = COALESCE(excluded.dedupe_seen_24h,  user_preferences.dedupe_seen_24h),
-			min_clip_seconds = COALESCE(excluded.min_clip_seconds, user_preferences.min_clip_seconds),
-			max_clip_seconds = COALESCE(excluded.max_clip_seconds, user_preferences.max_clip_seconds),
-			autoplay         = COALESCE(excluded.autoplay,         user_preferences.autoplay),
-			scout_threshold  = COALESCE(excluded.scout_threshold,  user_preferences.scout_threshold),
-			diversity_mix    = COALESCE(excluded.diversity_mix,    user_preferences.diversity_mix),
-			trending_boost   = COALESCE(excluded.trending_boost,   user_preferences.trending_boost),
-			freshness_bias   = COALESCE(excluded.freshness_bias,   user_preferences.freshness_bias),
-			updated_at       = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+			exploration_rate  = COALESCE(excluded.exploration_rate,  user_preferences.exploration_rate),
+			topic_weights     = COALESCE(excluded.topic_weights,     user_preferences.topic_weights),
+			dedupe_seen_24h   = COALESCE(excluded.dedupe_seen_24h,   user_preferences.dedupe_seen_24h),
+			min_clip_seconds  = COALESCE(excluded.min_clip_seconds,  user_preferences.min_clip_seconds),
+			max_clip_seconds  = COALESCE(excluded.max_clip_seconds,  user_preferences.max_clip_seconds),
+			autoplay          = COALESCE(excluded.autoplay,          user_preferences.autoplay),
+			scout_threshold   = COALESCE(excluded.scout_threshold,   user_preferences.scout_threshold),
+			scout_auto_ingest = COALESCE(excluded.scout_auto_ingest, user_preferences.scout_auto_ingest),
+			diversity_mix     = COALESCE(excluded.diversity_mix,     user_preferences.diversity_mix),
+			trending_boost    = COALESCE(excluded.trending_boost,    user_preferences.trending_boost),
+			freshness_bias    = COALESCE(excluded.freshness_bias,    user_preferences.freshness_bias),
+			updated_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 	`, userID,
 		prefs["exploration_rate"],
 		string(topicWeights),
@@ -128,6 +131,7 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 		prefs["max_clip_seconds"],
 		prefs["autoplay"],
 		prefs["scout_threshold"],
+		prefs["scout_auto_ingest"],
 		prefs["diversity_mix"],
 		prefs["trending_boost"],
 		prefs["freshness_bias"],

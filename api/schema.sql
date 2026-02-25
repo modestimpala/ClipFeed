@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     autoplay            INTEGER DEFAULT 1,
     nsfw_filter         INTEGER DEFAULT 1,
     scout_threshold     REAL DEFAULT 6.0,
+    scout_auto_ingest   INTEGER DEFAULT 1,
     diversity_mix       REAL DEFAULT 0.5,
     trending_boost      INTEGER DEFAULT 1,
     freshness_bias      REAL DEFAULT 0.5,

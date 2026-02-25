@@ -193,6 +193,7 @@ No app store needed.
 - `POST   /api/scout/sources/:id/trigger` - Force immediate check
 - `GET    /api/scout/candidates` - List discovered candidates
 - `POST   /api/scout/candidates/:id/approve` - Approve candidate for ingestion
+- `GET    /api/scout/profile` - User's interest profile (what Scout optimizes for)
 
 ## Development
 

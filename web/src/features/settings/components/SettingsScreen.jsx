@@ -20,6 +20,7 @@ export function SettingsScreen({ onLogout }) {
     autoplay: true,
     topic_weights: {},
     scout_threshold: 6.0,
+    scout_auto_ingest: true,
     diversity_mix: 0.5,
     trending_boost: true,
     freshness_bias: 0.5,
@@ -50,6 +51,8 @@ export function SettingsScreen({ onLogout }) {
         onBack={() => setSubscreen(null)}
         threshold={prefs.scout_threshold}
         onThresholdChange={(v) => handleChange('scout_threshold', v)}
+        autoIngest={prefs.scout_auto_ingest}
+        onAutoIngestChange={(v) => handleChange('scout_auto_ingest', v)}
       />
     );
   }
