@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -46,6 +47,9 @@ func scanClips(rows *sql.Rows) []map[string]interface{} {
 			"_file_size_bytes": fileSizeBytes,
 			"_age_hours": ageHours,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("scanClips iteration error: %v", err)
 	}
 	return clips
 }

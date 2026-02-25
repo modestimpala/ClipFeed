@@ -1,15 +1,27 @@
 const API_BASE = '/api';
 
 export function getToken() {
-  return localStorage.getItem('clipfeed_token');
+  try {
+    return localStorage.getItem('clipfeed_token');
+  } catch {
+    return null;
+  }
 }
 
 export function setToken(token) {
-  localStorage.setItem('clipfeed_token', token);
+  try {
+    localStorage.setItem('clipfeed_token', token);
+  } catch {
+    // Storage unavailable (e.g. Safari private browsing)
+  }
 }
 
 export function clearToken() {
-  localStorage.removeItem('clipfeed_token');
+  try {
+    localStorage.removeItem('clipfeed_token');
+  } catch {
+    // Storage unavailable
+  }
 }
 
 export async function request(method, path, body = null) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -235,6 +236,9 @@ func (a *App) handleListCookieStatus(w http.ResponseWriter, r *http.Request) {
 				"updated_at": updatedAt,
 			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("handleListCookieStatus: rows iteration error: %v", err)
 	}
 
 	writeJSON(w, 200, map[string]interface{}{"platforms": statuses})

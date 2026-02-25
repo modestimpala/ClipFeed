@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -156,7 +155,8 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 		}
 	}
 	if fq.RecencyDays > 0 {
-		where = append(where, fmt.Sprintf("c.created_at > datetime('now', '-%d days')", fq.RecencyDays))
+		where = append(where, "c.created_at > datetime('now', ? || ' days')")
+		args = append(args, -fq.RecencyDays)
 	}
 	if fq.MinScore > 0 {
 		where = append(where, "c.content_score >= ?")
@@ -238,7 +238,6 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	WHERE ` + strings.Join(where, " AND ") + `
 	ORDER BY c.content_score DESC LIMIT 60`
 
-	args = append(args)
 	rows, err := a.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

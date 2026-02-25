@@ -3,7 +3,9 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
+	"strings"
 )
 
 func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +176,9 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 			"content_score": score, "platform": platform, "channel_name": channelName,
 			"source_url": sourceURL,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("handleSearch: rows iteration error: %v", err)
 	}
 	writeJSON(w, 200, map[string]interface{}{"hits": hits, "query": q, "total": len(hits)})
 }
