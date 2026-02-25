@@ -302,6 +302,9 @@ func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interfa
 		}
 		velocity[cid] = count
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("applyTrendingBoost: rows iteration error: %v", err)
+	}
 
 	if len(velocity) == 0 {
 		return
@@ -411,7 +414,7 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 	var totalViews int
 	var avgWatch float64
 	var likeCount, saveCount int
-	_ = a.db.QueryRowContext(ctx, `
+	if err := a.db.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
 			COALESCE(AVG(COALESCE(watch_percentage, 0)), 0),
@@ -419,8 +422,9 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 			COALESCE(SUM(CASE WHEN action = 'save' THEN 1 ELSE 0 END), 0)
 		FROM interactions
 		WHERE user_id = ?
-	`, userID).Scan(&totalViews, &avgWatch, &likeCount, &saveCount)
-
+	`, userID).Scan(&totalViews, &avgWatch, &likeCount, &saveCount); err != nil {
+		log.Printf("loadLTRUserStats: user stats query failed: %v", err)
+	}
 	stats.TotalViews = float64(totalViews)
 	stats.AvgWatchPercentage = avgWatch
 	if totalViews > 0 {
@@ -429,11 +433,13 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 	}
 
 	var hoursSince sql.NullFloat64
-	_ = a.db.QueryRowContext(ctx, `
+	if err := a.db.QueryRowContext(ctx, `
 		SELECT (julianday('now') - julianday(MAX(created_at))) * 24.0
 		FROM interactions
 		WHERE user_id = ?
-	`, userID).Scan(&hoursSince)
+	`, userID).Scan(&hoursSince); err != nil {
+		log.Printf("loadLTRUserStats: hours-since query failed: %v", err)
+	}
 	if hoursSince.Valid && !math.IsNaN(hoursSince.Float64) && !math.IsInf(hoursSince.Float64, 0) && hoursSince.Float64 >= 0 {
 		stats.HoursSinceLastSession = hoursSince.Float64
 	}
@@ -461,6 +467,9 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 				stats.ChannelAffinity[sourceID] = affinity
 			}
 		}
+		if err := rows.Err(); err != nil {
+			log.Printf("loadLTRUserStats: channel affinity rows error: %v", err)
+		}
 		rows.Close()
 	}
 
@@ -471,6 +480,9 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 			if topicRows.Scan(&topicID) == nil {
 				stats.TopicAffinities[topicID] = struct{}{}
 			}
+		}
+		if err := topicRows.Err(); err != nil {
+			log.Printf("loadLTRUserStats: topic affinity rows error: %v", err)
 		}
 		topicRows.Close()
 	}
@@ -508,6 +520,9 @@ func (a *App) loadClipTopicStats(ctx context.Context, clipIDs []string, userTopi
 		if _, ok := userTopics[topicID]; ok {
 			topicOverlap[clipID]++
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("loadClipTopicStats: rows iteration error: %v", err)
 	}
 
 	return topicCount, topicOverlap
@@ -649,6 +664,9 @@ func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
 			},
 			score: sim,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("handleSimilarClips: rows iteration error: %v", err)
 	}
 
 	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
