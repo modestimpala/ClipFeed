@@ -69,6 +69,9 @@ services:
         condition: service_healthy
     environment:
       DB_PATH: /data/clipfeed.db
+      WORKER_MODE: ${WORKER_MODE:-direct}
+      WORKER_API_URL: ${WORKER_API_URL:-http://api:8080}
+      WORKER_SECRET: ${WORKER_SECRET:-}
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: ${MINIO_USER:-clipfeed}
       MINIO_SECRET_KEY: ${MINIO_PASSWORD:-changeme123}
