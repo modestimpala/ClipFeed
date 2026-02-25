@@ -6,7 +6,9 @@
   --bg-surface: #1a1a1a;
   --border: #2a2a2a;
   --text: #e8e8e8;
+  --text-primary: #e8e8e8;
   --text-dim: #888;
+  --text-secondary: #888;
   --text-muted: #555;
   --accent: #ff3b5c;
   --accent-glow: rgba(255, 59, 92, 0.25);

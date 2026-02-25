@@ -213,7 +213,6 @@ services:
       LLM_THRESHOLD: "${LLM_THRESHOLD:-6}"
     volumes:
       - db_data:/data
-    read_only: true
     tmpfs:
       - /tmp
     cap_drop:

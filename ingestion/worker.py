@@ -529,6 +529,12 @@ class Worker:
 
     # --- DB/API abstraction helpers ---
 
+    _ALLOWED_SOURCE_COLUMNS = frozenset({
+        'status', 'title', 'channel_name', 'platform', 'duration_seconds',
+        'error', 'thumbnail_url', 'last_checked_at', 'check_interval_hours',
+        'force_check',
+    })
+
     def _update_source(self, db, source_id, **fields):
         """Update source via direct DB or HTTP API."""
         if self.http_mode:
@@ -536,6 +542,8 @@ class Worker:
         else:
             sets, vals = [], []
             for k, v in fields.items():
+                if k not in self._ALLOWED_SOURCE_COLUMNS:
+                    raise ValueError(f"disallowed column in _update_source: {k}")
                 sets.append(f"{k} = ?")
                 vals.append(v)
             vals.append(source_id)
@@ -943,6 +951,9 @@ class Worker:
             transcript = self._transcribe(clip_path)
             log.info("Segment %d: transcript length=%d words", index, len(transcript.split()) if transcript else 0)
 
+            # Generate a title from the transcript or source (reused for embedding context below)
+            title = self._generate_clip_title(transcript, metadata.get("title", ""), index)
+
             # Extract topics
             log.info("Segment %d: extracting topics via KeyBERT", index)
             topics = self._extract_topics(transcript, metadata.get("title", ""))
@@ -951,8 +962,7 @@ class Worker:
 
             # Generate embeddings
             log.info("Segment %d: generating embeddings (text + visual)", index)
-            title_for_embed = self._generate_clip_title(transcript, metadata.get("title", ""), index)
-            text_emb = self._generate_text_embedding(f"{title_for_embed} {transcript}")
+            text_emb = self._generate_text_embedding(f"{title} {transcript}")
             visual_emb = self._generate_visual_embedding(clip_path)
 
             clip_key = f"clips/{clip_id}/{clip_filename}"
@@ -969,9 +979,6 @@ class Worker:
             clip_meta = self.extract_metadata(clip_path)
 
             expires_at = (datetime.utcnow() + timedelta(days=CLIP_TTL_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
-
-            # Generate a title from the transcript or source
-            title = self._generate_clip_title(transcript, metadata.get("title", ""), index)
 
             # Get platform/channel from metadata (passed from process_job) or DB
             platform = metadata.get("_platform", "")

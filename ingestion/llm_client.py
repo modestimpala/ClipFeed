@@ -262,19 +262,23 @@ def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
         return False
 
 
+import threading
+
+_tl = threading.local()
+
 def _log_to_db(provider: str, model: str, prompt: str, response: str, error: str, duration_ms: int):
     db_path = os.getenv("DB_PATH", "/data/clipfeed.db")
     if not os.path.exists(db_path):
         return
     try:
         import sqlite3
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        conn.execute(
+        if not hasattr(_tl, "conn"):
+            _tl.conn = sqlite3.connect(db_path, timeout=5.0)
+        _tl.conn.execute(
             "INSERT INTO llm_logs (system, model, prompt, response, error, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
             (provider, model, prompt, response, error, duration_ms)
         )
-        conn.commit()
-        conn.close()
+        _tl.conn.commit()
     except Exception as e:
         logger.warning(f"Failed to log to llm_logs: {e}")
 

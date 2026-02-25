@@ -29,7 +29,7 @@ function platformLabel(url) {
   } catch { return null; }
 }
 
-export const ClipCard = React.forwardRef(function ClipCard({ 
+export const ClipCard = React.memo(React.forwardRef(function ClipCard({ 
   clip, 
   isActive, 
   shouldRenderVideo,
@@ -75,9 +75,17 @@ export const ClipCard = React.forwardRef(function ClipCard({
     if (!video) return;
 
     if (isActive && streamUrl) {
+      // 1. Physically force mute *immediately* so WebKit knows it's safe
+      video.muted = true;
+      video.src = streamUrl;
+
       const startPlayback = () => {
+        // 2. Play asynchronously. This succeeds because the video is muted.
         video.play().then(() => {
           setPlaying(true);
+          // 3. Playback is locked. Instantly sync back to the user's global preference
+          video.muted = isMuted;
+          
           startTimeRef.current = Date.now();
           if (viewFiredRef.current !== clip.id) {
             viewFiredRef.current = clip.id;
@@ -89,8 +97,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
         });
       };
 
-      video.src = streamUrl;
-      // iOS requires waiting for data before play() to avoid black frames
+      // 4. Wait for the first frame to decode to prevent the black flash
       if (video.readyState >= 2) {
         startPlayback();
       } else {
@@ -99,11 +106,13 @@ export const ClipCard = React.forwardRef(function ClipCard({
           startPlayback();
         };
         video.addEventListener('loadeddata', onReady);
-        video.load();
+        video.load(); // Kickstart the network request
       }
     } else {
       video.pause();
-      video.src = '';
+      // 5. Revert to standard clearing to prevent bricking the recycled DOM node
+      video.src = ''; 
+      video.load();
       setPlaying(false);
       setProgress(0);
       if (startTimeRef.current && clip) {
@@ -113,7 +122,14 @@ export const ClipCard = React.forwardRef(function ClipCard({
         startTimeRef.current = null;
       }
     }
-  }, [isActive, streamUrl, clip, onInteract]);
+  }, [isActive, streamUrl, clip, onInteract]); // Do not add isMuted here!
+
+  // Dedicated effect to handle live volume toggling while playing
+  useEffect(() => {
+    if (videoRef.current) {
+      videoRef.current.muted = isMuted;
+    }
+  }, [isMuted]);
 
   useEffect(() => {
     if (!isActive) setShowInfo(false);
@@ -188,7 +204,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
           webkit-playsinline="true"
           preload="auto"
           loop 
-          muted={isMuted}
+          muted
           poster={clip.thumbnail_url || undefined}
         />
       ) : (
@@ -312,4 +328,4 @@ export const ClipCard = React.forwardRef(function ClipCard({
       <div className="clip-progress"><div className="clip-progress-bar" style={{ width: `${progress}%` }} /></div>
     </div>
   );
-});
+}));

@@ -31,9 +31,9 @@ export function clearToken() {
   }
 }
 
-export async function request(method, path, body = null) {
+export async function request(method, path, body = null, { token: overrideToken } = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  const token = getToken();
+  const token = overrideToken || getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
   const controller = new AbortController();
@@ -44,10 +44,15 @@ export async function request(method, path, body = null) {
 
   try {
     const res = await fetch(`${API_BASE}${path}`, opts);
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      data = { error: 'Failed to parse response' };
+    }
 
     if (!res.ok) {
-      if (res.status === 401 && token && !path.startsWith('/admin')) {
+      if (res.status === 401 && token && !path.startsWith('/admin') && !overrideToken) {
         clearToken();
         window.location.reload();
       }

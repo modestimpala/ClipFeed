@@ -46,7 +46,7 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 | Score Updater | Python | Periodic content score recalculation |
 | Scout | Python (ai profile) | LLM-backed content discovery and scoring |
 | LLM | Ollama or hosted API (ai profile) | Local or hosted inference (summaries, scoring, scouting) |
-| Database | SQLite (WAL) | Single-connection DB: users, clips, interactions, jobs, topic graph, embeddings |
+| Database | SQLite (WAL) or Postgres | Single-connection SQLite or pooled Postgres: users, clips, interactions, jobs, topic graph, embeddings |
 | Storage | MinIO | S3-compatible object storage for video and thumbnail files |
 | Search | SQLite FTS5 | Full-text search across clip titles, transcripts, channels |
 | Proxy | nginx | Reverse proxy, SPA routing, streaming optimization |
@@ -68,6 +68,11 @@ docker compose logs -f worker
 **With AI features (Scout + LLM):**
 ```bash
 docker compose --profile ai up -d
+```
+
+**HTTPS (Automatic Let's Encrypt via Caddy):**
+```bash
+SERVER_NAME=clipfeed.yourdomain.com docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 ```
 
 **GPU Acceleration (requires NVIDIA Container Toolkit):**
@@ -109,6 +114,18 @@ The ranking pipeline:
 - The Env Vars ensure the worker chops everything into healthy, manageable bite-sized files (e.g., ~45 seconds each).
 - The Settings Page lets you filter out any clips from the global pool that don't match your current mood.
 
+## Backup & Restore
+
+No built-in persistent volumes are safe forever. You can create a snapshot of the SQLite database and MinIO storage:
+
+```bash
+make backup
+# Creates backups/YYYYMMDD_HHMMSS/ containing clipfeed.db and minio.tar.gz
+
+make restore BACKUP_DIR=backups/YYYYMMDD_HHMMSS
+# Stops services, overwrites DB/storage from backup, restarts services
+```
+
 ## Storage Lifecycle
 
 Clips auto-expire after a configurable TTL (default 30 days). Saving or favoriting a clip sets `is_protected = 1` (via trigger), exempting it from eviction.
@@ -121,6 +138,31 @@ Or add to crontab:
 ```
 0 3 * * * cd /path/to/clipfeed && make lifecycle
 ```
+
+## Alternate Database (Postgres)
+
+ClipFeed defaults to a single-file SQLite database configured for WAL. This natively serializes writes and allows concurrent reads, comfortably handling ~30-50 concurrent active users.
+
+If you anticipate significant load (100+ concurrent active users) or team/multi-tenant deployments, you can switch to PostgreSQL:
+
+1. Update `.env`: `DB_DRIVER=postgres` and `DB_URL=postgres://user:pass@host:5432/clipfeed`
+2. Restart the API. The Go backend automatically initializes the `schema_migrations` and applies the Postgres schemas on boot.
+
+## Frontend Configuration
+
+The React frontend handles configuration at runtime using `window.__CONFIG__` rather than requiring a static build. To deploy the UI on Vercel/Netlify/Pages, edit `web/index.html`:
+
+```html
+<script>
+  window.__CONFIG__ = {
+    API_BASE: 'https://api.yourdomain.com/api',
+    STORAGE_BASE: 'https://api.yourdomain.com'
+  };
+</script>
+```
+
+When run behind Nginx (default), you can inject custom backend routing via environment variables:
+`API_UPSTREAM`, `WEB_UPSTREAM`, and `MINIO_UPSTREAM`.
 
 ## PWA Installation
 
