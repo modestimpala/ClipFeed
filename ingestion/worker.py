@@ -13,9 +13,12 @@ import sqlite3
 import signal
 import logging
 import subprocess
+import hashlib
+import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 import struct
 
@@ -43,6 +46,7 @@ FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")
 WHISPER_THREADS = int(os.getenv("WHISPER_THREADS", "4"))
 CLIP_TTL_DAYS = int(os.getenv("CLIP_TTL_DAYS", "30"))
 WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/clipfeed"))
+JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
 
 # Clip splitting parameters
 MIN_CLIP_SECONDS = int(os.getenv("MIN_CLIP_SECONDS", "15"))
@@ -74,6 +78,24 @@ def signal_handler(sig, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
+
+
+def decrypt_cookie(encoded: str, secret: str) -> str | None:
+    """Decrypt a cookie encrypted by the Go API (AES-256-GCM, nonce-prepended, base64).
+    Returns None on any failure so the job can proceed without cookies."""
+    try:
+        key = hashlib.sha256(secret.encode()).digest()
+        data = base64.b64decode(encoded)
+        nonce_size = 12  # AES-GCM standard nonce length
+        if len(data) < nonce_size:
+            return None
+        nonce, ciphertext = data[:nonce_size], data[nonce_size:]
+        aesgcm = AESGCM(key)
+        plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+        return plaintext.decode()
+    except Exception as e:
+        log.warning("Cookie decryption failed: %s", e)
+        return None
 
 
 def _detect_device() -> tuple[str, str]:
@@ -385,8 +407,9 @@ class Worker:
                           AND platform = ? AND is_active = 1
                     """, (source_id, platform)).fetchone()
                     if row:
-                        cookie_str = row["cookie_str"]
-                        log.info("Job %s: using platform cookie for %s", job_id[:8], platform)
+                        cookie_str = decrypt_cookie(row["cookie_str"], JWT_SECRET)
+                        if cookie_str:
+                            log.info("Job %s: using platform cookie for %s", job_id[:8], platform)
 
                 # Step 0: Fetch source metadata early so failed downloads still have context
                 log.info("Job %s: [step 0/4] fetching source metadata for %s", job_id[:8], url[:80])

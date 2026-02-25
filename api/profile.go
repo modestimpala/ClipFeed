@@ -170,15 +170,22 @@ func (a *App) handleSetCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	encrypted, err := encryptCookie(req.CookieStr, a.cfg.JWTSecret)
+	if err != nil {
+		log.Printf("cookie encryption failed: %v", err)
+		writeJSON(w, 500, map[string]string{"error": "failed to save cookie"})
+		return
+	}
+
 	cookieID := uuid.New().String()
-	_, err := a.db.ExecContext(r.Context(), `
+	_, err = a.db.ExecContext(r.Context(), `
 		INSERT INTO platform_cookies (id, user_id, platform, cookie_str, is_active, updated_at)
 		VALUES (?, ?, ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 		ON CONFLICT(user_id, platform) DO UPDATE SET
 			cookie_str = excluded.cookie_str,
 			is_active  = 1,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-	`, cookieID, userID, platform, req.CookieStr)
+	`, cookieID, userID, platform, encrypted)
 
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to save cookie"})
