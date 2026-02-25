@@ -9,6 +9,7 @@ import { AdminScreen } from '../features/admin/components/AdminScreen';
 import { api } from '../shared/api/clipfeedApi';
 import { Icons } from '../shared/ui/icons';
 import { InstallPrompt } from '../shared/ui/InstallPrompt';
+import { ToastContainer } from '../shared/ui/toast';
 
 export default function App() {
   const [authed, setAuthed] = useState(!!api.getToken());
@@ -72,6 +73,7 @@ export default function App() {
       {showIngest && <IngestModal onClose={() => setShowIngest(false)} />}
 
       <InstallPrompt />
+      <ToastContainer />
 
       <nav className="nav-bar">
         <button className={`nav-btn ${tab === 'feed' ? 'active' : ''}`} onClick={() => setTab('feed')}>

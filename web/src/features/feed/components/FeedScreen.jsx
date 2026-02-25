@@ -55,9 +55,9 @@ export function FeedScreen() {
     else cardRefs.current.delete(clipId);
   }, []);
 
-  function handleInteract(clipId, action, duration, percentage) {
+  const handleInteract = useCallback((clipId, action, duration, percentage) => {
     if (api.getToken()) api.interact(clipId, action, duration, percentage).catch(() => {});
-  }
+  }, []);
 
   const handleToggleMute = useCallback(() => setIsGlobalMuted(m => !m), []);
 

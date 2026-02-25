@@ -33,10 +33,10 @@ export function SettingsScreen({ onLogout }) {
           setPrefs((prev) => ({ ...prev, ...data.preferences }));
         }
       })
-      .catch(() => {});
+      .catch(() => { /* profile may not exist for anonymous users */ });
     api.getConfig()
       .then((data) => setAiEnabled(!!data.ai_enabled))
-      .catch(() => {});
+      .catch(() => { /* non-critical */ });
   }, []);
 
   function handleChange(key, value) {

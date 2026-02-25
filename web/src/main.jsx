@@ -15,6 +15,7 @@ import './features/saved/saved.css';
 import './features/settings/settings.css';
 import './features/admin/admin.css';
 import './shared/install-prompt.css';
+import './shared/toast.css';
 import App from './app/App';
 
 createRoot(document.getElementById('root')).render(<App />);

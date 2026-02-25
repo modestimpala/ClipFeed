@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../api/clipfeedApi';
 import { BottomSheet } from './BottomSheet';
 import { Icons } from './icons';
+import { showToast } from './toast';
 
 export function CollectionPicker({ clipId, onClose }) {
   const [collections, setCollections] = useState([]);
@@ -14,7 +15,7 @@ export function CollectionPicker({ clipId, onClose }) {
   useEffect(() => {
     api.getCollections()
       .then((data) => setCollections(data.collections || []))
-      .catch(() => {})
+      .catch(() => showToast('Failed to load collections'))
       .finally(() => setLoading(false));
     return () => clearTimeout(timerRef.current);
   }, []);

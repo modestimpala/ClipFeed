@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { showToast } from '../../../shared/ui/toast';
 import { Tabs } from '../../../shared/ui/Tabs';
 import { timeAgo, truncate } from '../../../shared/utils/formatters';
 
@@ -76,7 +77,7 @@ export function ScoutCandidateList() {
 
   function handleApprove(id) {
     setCandidates((prev) => prev.filter((c) => c.id !== id));
-    api.approveCandidate(id).catch(() => {});
+    api.approveCandidate(id).catch(() => showToast('Failed to approve candidate'));
   }
 
   function scoreBadgeClass(status) {

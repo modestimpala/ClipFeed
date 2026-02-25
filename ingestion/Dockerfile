@@ -20,7 +20,7 @@ RUN if [ "$ENABLE_GPU" = "true" ]; then \
 # Bake base whisper model into image (avoids cold-start download)
 RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
 
-COPY worker.py lifecycle.py score_updater.py llm_client.py ./
+COPY worker.py lifecycle.py score_updater.py llm_client.py api_client.py ./
 COPY l2r/ ./l2r/
 
 RUN groupadd -r -g 1000 appgroup && useradd -r -u 1000 -g appgroup -m appuser

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
+import { showToast } from '../../../shared/ui/toast';
 import { timeAgo } from '../../../shared/utils/formatters';
 
 const INTERVAL_OPTIONS = [6, 12, 24, 48];
@@ -15,7 +16,7 @@ export function ScoutSourceCard({ source, onUpdate, onDelete, onTrigger }) {
     setChecking(true);
     api.triggerScoutSource(source.id)
       .then(() => { if (onTrigger) onTrigger(); })
-      .catch(() => {})
+      .catch(() => showToast('Failed to trigger check'))
       .finally(() => setTimeout(() => setChecking(false), 2000));
   }
 

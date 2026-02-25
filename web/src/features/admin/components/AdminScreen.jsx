@@ -128,17 +128,13 @@ function LLMLogsModal({ onClose }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const originalToken = api.getToken();
     const adminToken = localStorage.getItem('clipfeed_admin_token');
-    if (adminToken) api.setToken(adminToken);
 
-    api.getAdminLLMLogs()
+    api.getAdminLLMLogs(adminToken)
       .then(data => setLogs(data.logs || []))
       .catch(console.error)
       .finally(() => {
         setLoading(false);
-        if (originalToken) api.setToken(originalToken);
-        else api.clearToken();
       });
   }, []);
 
@@ -254,11 +250,9 @@ export function AdminScreen({ onBack }) {
   const timerRef = useRef(null);
 
   function loadStats() {
-    const originalToken = api.getToken();
     const adminToken = localStorage.getItem('clipfeed_admin_token');
-    if (adminToken) api.setToken(adminToken);
 
-    api.getAdminStatus()
+    api.getAdminStatus(adminToken)
       .then((data) => {
         setStats(data);
         setError(null);
@@ -267,10 +261,6 @@ export function AdminScreen({ onBack }) {
       .catch((err) => {
         if (err.status === 401) handleLogout();
         else setError(err.error || 'Failed to load status');
-      })
-      .finally(() => {
-        if (originalToken) api.setToken(originalToken);
-        else api.clearToken();
       });
   }
 
@@ -290,18 +280,14 @@ export function AdminScreen({ onBack }) {
   async function handleClearFailed() {
     if (clearing) return;
     setClearing(true);
-    const originalToken = api.getToken();
     const adminToken = localStorage.getItem('clipfeed_admin_token');
-    if (adminToken) api.setToken(adminToken);
     try {
-      await api.clearFailedJobs();
+      await api.clearFailedJobs(adminToken);
       loadStats();
     } catch (err) {
       console.error('Failed to clear jobs:', err);
     } finally {
       setClearing(false);
-      if (originalToken) api.setToken(originalToken);
-      else api.clearToken();
     }
   }
 

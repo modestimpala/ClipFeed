@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
+import { showToast } from '../../../shared/ui/toast';
 
 const INTERVAL_OPTIONS = [6, 12, 24, 48];
 
@@ -26,7 +27,7 @@ export function AddScoutSourceForm({ onCreated }) {
         setOpen(false);
         onCreated();
       })
-      .catch(() => {})
+      .catch(() => showToast('Failed to add source'))
       .finally(() => setSubmitting(false));
   }
 
