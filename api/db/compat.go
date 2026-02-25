@@ -111,7 +111,7 @@ func rewritePlaceholders(query string) string {
 		c := query[i]
 		if c == '\'' {
 			if inStr && i+1 < len(query) && query[i+1] == '\'' {
-				// Escaped quote ('') — stays inside the string literal.
+				// Escaped quote ('') -- stays inside the string literal.
 				buf.WriteByte(c)
 				buf.WriteByte(query[i+1])
 				i++
@@ -131,7 +131,7 @@ func rewritePlaceholders(query string) string {
 }
 
 // ---------------------------------------------------------------------------
-// SQL dialect helpers — return SQL fragments appropriate for the dialect.
+// SQL dialect helpers -- return SQL fragments appropriate for the dialect.
 // ---------------------------------------------------------------------------
 
 // NowUTC returns a SQL expression for the current UTC time as ISO 8601 text.

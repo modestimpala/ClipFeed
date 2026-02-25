@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 
-// Simple event-based toast — avoids prop-drilling across features.
+// Simple event-based toast -- avoids prop-drilling across features.
 const listeners = new Set();
 
 export function showToast(message, type = 'error') {

@@ -47,7 +47,7 @@ make up
 make logs-worker
 ```
 
-**Choosing what to start — set `COMPOSE_PROFILES` in `.env`** (prompted during setup):
+**Choosing what to start -- set `COMPOSE_PROFILES` in `.env`** (prompted during setup):
 
 | `.env` setting | Services started |
 |---|---|
@@ -96,7 +96,7 @@ The ranking pipeline:
 
 ## Ingestion Limits vs User Preferences
 
-- **Env vars** control the worker pipeline (clip duration, download limits, processing mode) — these bound what enters the global pool.
+- **Env vars** control the worker pipeline (clip duration, download limits, processing mode) -- these bound what enters the global pool.
 - **Settings page** lets each user filter the global pool to match their current preferences.
 
 Key env vars (in `.env`):
@@ -144,7 +144,7 @@ ClipFeed defaults to SQLite (WAL mode), which comfortably handles ~30–50 concu
 For heavier load (100+ concurrent users) or multi-tenant deployments, switch to PostgreSQL:
 
 1. Set `DB_DRIVER=postgres` and `DB_URL=postgres://user:pass@host:5432/clipfeed` in `.env`
-2. Restart the API — the backend initializes schema on boot automatically.
+2. Restart the API -- the backend initializes schema on boot automatically.
 
 ## Frontend Configuration
 
@@ -237,7 +237,7 @@ No app store needed.
 
 ## Development
 
-All builds and tests run inside Docker — do not run Go, npm, or Python on the host.
+All builds and tests run inside Docker -- do not run Go, npm, or Python on the host.
 
 ```bash
 # Rebuild a single service after changes
@@ -276,7 +276,7 @@ Scout, clip summaries, and AI-assisted features require an LLM. Two modes:
 
 **Using Claude (Anthropic) as the hosted LLM:**
 
-Option A — native Anthropic provider:
+Option A -- native Anthropic provider:
 ```
 LLM_PROVIDER=anthropic
 LLM_BASE_URL=https://api.anthropic.com/v1
@@ -285,7 +285,7 @@ LLM_MODEL=claude-sonnet-4-6
 ANTHROPIC_VERSION=2023-06-01
 ```
 
-Option B — via Anthropic's OpenAI-compatible endpoint:
+Option B -- via Anthropic's OpenAI-compatible endpoint:
 ```
 LLM_PROVIDER=openai
 LLM_BASE_URL=https://api.anthropic.com/v1/
@@ -297,8 +297,8 @@ Both options work. Option B uses Anthropic's OpenAI SDK compatibility layer, whi
 
 ## Roadmap
 
-- [x] Phase 1: Core pipeline — ingest, split, serve, basic feed
-- [x] Phase 2: Algorithm engine — topic graph, L2R embeddings, preference UI, collections
+- [x] Phase 1: Core pipeline -- ingest, split, serve, basic feed
+- [x] Phase 2: Algorithm engine -- topic graph, L2R embeddings, preference UI, collections
 - [x] Phase 3: Search (FTS5), saved filters, platform cookies, clip summaries, Scout
 - [x] Phase 4: Multi-user (auth, per-user preferences/embeddings/collections)
 

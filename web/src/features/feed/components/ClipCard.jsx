@@ -48,7 +48,7 @@ export const ClipCard = React.memo(React.forwardRef(function ClipCard({
   const startTimeRef = useRef(null);
   const viewFiredRef = useRef(null);
 
-  // Fetch stream URL — use cached blob instantly, otherwise stream directly
+  // Fetch stream URL -- use cached blob instantly, otherwise stream directly
   useEffect(() => {
     if (!shouldRenderVideo || !clip) return;
     let cancelled = false;

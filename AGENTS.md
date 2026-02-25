@@ -36,7 +36,7 @@ When changing behavior, keep edits scoped to the relevant layer and avoid cross-
 
 ## Verification Commands
 
-**Always verify through Docker** — do NOT run `go`, `npm`, or `python` directly on the host. The local machine may not have the correct toolchains installed.
+**Always verify through Docker** -- do NOT run `go`, `npm`, or `python` directly on the host. The local machine may not have the correct toolchains installed.
 
 Rebuild only the service(s) you changed, then restart them:
 

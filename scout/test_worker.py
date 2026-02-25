@@ -203,13 +203,13 @@ class TestDurationFit(unittest.TestCase):
         self.assertAlmostEqual(_duration_fit(60), 1.0)
 
     def test_moderate_length_near_one(self):
-        # 15 < d ≤ 60 — score increases from 0.6 towards 1.0
+        # 15 < d ≤ 60 -- score increases from 0.6 towards 1.0
         score = _duration_fit(37.5)  # midpoint of [15, 60]
         self.assertGreater(score, 0.6)
         self.assertLessEqual(score, 1.0)
 
     def test_long_video_decay(self):
-        # 60 < d ≤ 180 — score decreases from 1.0 towards 0.8
+        # 60 < d ≤ 180 -- score decreases from 1.0 towards 0.8
         score_at_120 = _duration_fit(120)
         self.assertGreater(score_at_120, 0.8)
         self.assertLessEqual(score_at_120, 1.0)
@@ -374,7 +374,7 @@ class TestAutoApprove(unittest.TestCase):
     def test_duplicate_url_rolls_back_and_marks_rejected(self):
         """Second candidate with the same URL triggers IntegrityError on sources.url
         UNIQUE constraint, which should roll back (no job created) and mark the
-        candidate rejected — not ingested."""
+        candidate rejected -- not ingested."""
         db = _make_db()
         # Add a UNIQUE constraint on sources.url so duplicates fail.
         db.execute("CREATE UNIQUE INDEX sources_url_unique ON sources (url)")

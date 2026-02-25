@@ -189,7 +189,7 @@ func (h *Handler) HandleClipSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if transcript == "" {
-		log.Printf("[LLM] No transcript for clip %s — skipping summary", clipID)
+		log.Printf("[LLM] No transcript for clip %s -- skipping summary", clipID)
 		httputil.WriteJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "model": "", "cached": false})
 		return
 	}

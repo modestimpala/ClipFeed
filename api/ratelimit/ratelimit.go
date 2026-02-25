@@ -10,7 +10,7 @@ import (
 )
 
 // RateLimiter implements a per-IP token bucket rate limiter.
-// No external dependencies — suitable for a single-instance deployment.
+// No external dependencies -- suitable for a single-instance deployment.
 type RateLimiter struct {
 	mu       sync.Mutex
 	visitors map[string]*bucket

@@ -84,7 +84,7 @@ def _split_by_groups(
 
     Single-user fallback: when n_groups == 1, a random group split is
     impossible (100% lands in one bucket). Instead, do a chronological
-    time-series split — train on the first (1-test_size) interactions,
+    time-series split -- train on the first (1-test_size) interactions,
     test on the remainder. The data from extract_features is already
     ordered by (user_id, created_at), so temporal order is preserved.
     """

@@ -1,4 +1,4 @@
-# GPU override — enable by adding to .env:
+# GPU override -- enable by adding to .env:
 #   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
 #
 # Prerequisites:

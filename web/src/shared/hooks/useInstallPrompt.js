@@ -84,7 +84,7 @@ export function useInstallPrompt() {
     setDismissed(true);
     try {
       localStorage.setItem(DISMISS_KEY, String(Date.now()));
-    } catch { /* quota exceeded — ignore */ }
+    } catch { /* quota exceeded -- ignore */ }
   }, []);
 
   const bannerVisible =

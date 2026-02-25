@@ -14,7 +14,7 @@ import requests
 
 logger = logging.getLogger("llm_client")
 
-# Master toggle — when false, all LLM calls are skipped instantly.
+# Master toggle -- when false, all LLM calls are skipped instantly.
 ENABLE_AI = os.getenv("ENABLE_AI", "true").lower() == "true"
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
@@ -156,14 +156,14 @@ def is_available() -> bool:
         elif provider == "anthropic":
             headers = _anthropic_headers()
             if not headers.get("x-api-key"):
-                logger.warning("[LLM] API key missing for provider=%s — cannot check availability", provider)
+                logger.warning("[LLM] API key missing for provider=%s -- cannot check availability", provider)
                 return False
             url = f"{base}/models"
             logger.debug("[LLM] GET %s (timeout=%ds)", url, AVAILABILITY_TIMEOUT)
             r = requests.get(url, headers=headers, timeout=AVAILABILITY_TIMEOUT)
         else:
             if not LLM_API_KEY:
-                logger.warning("[LLM] API key missing for provider=%s — cannot check availability", provider)
+                logger.warning("[LLM] API key missing for provider=%s -- cannot check availability", provider)
                 return False
             url = f"{base}/models"
             logger.debug("[LLM] GET %s (timeout=%ds)", url, AVAILABILITY_TIMEOUT)
@@ -224,14 +224,14 @@ def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
     model = _model(model)
     logger.info("[LLM] Ensuring model: provider=%s model=%s auto_pull=%s", provider, model, auto_pull)
     if not model:
-        logger.warning("[LLM] No model configured — cannot proceed")
+        logger.warning("[LLM] No model configured -- cannot proceed")
         return False
 
     if provider != "ollama":
         if not LLM_API_KEY:
-            logger.warning("[LLM] No API key configured for provider=%s — cannot use model %s", provider, model)
+            logger.warning("[LLM] No API key configured for provider=%s -- cannot use model %s", provider, model)
             return False
-        logger.info("[LLM] API-based provider=%s with model=%s — assuming available", provider, model)
+        logger.info("[LLM] API-based provider=%s with model=%s -- assuming available", provider, model)
         return True
 
     if model_exists(model):
@@ -242,7 +242,7 @@ def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
         logger.warning("[LLM] Ollama model '%s' not found and auto_pull disabled", model)
         return False
 
-    logger.info("[LLM] Ollama model '%s' not found — pulling now (timeout=%ds)...", model, PULL_TIMEOUT)
+    logger.info("[LLM] Ollama model '%s' not found -- pulling now (timeout=%ds)...", model, PULL_TIMEOUT)
     start = time.time()
     try:
         pull_url = f"{_base_url()}/api/pull"
@@ -299,7 +299,7 @@ def generate(
     
     try:
         if provider != "ollama" and not LLM_API_KEY:
-            logger.warning("[LLM] API key missing for provider=%s — aborting generate", provider)
+            logger.warning("[LLM] API key missing for provider=%s -- aborting generate", provider)
             return ""
 
         params = _litellm_params(model, max_tokens)
@@ -368,7 +368,7 @@ def refine_topics(transcript: str, keybert_topics: list) -> list:
     )
     result = generate(prompt)
     if not result:
-        logger.warning("[LLM] Topic refinement returned empty — keeping original topics: %s", keybert_topics)
+        logger.warning("[LLM] Topic refinement returned empty -- keeping original topics: %s", keybert_topics)
         return list(keybert_topics)
 
     try:
@@ -440,7 +440,7 @@ def evaluate_candidate(
         try:
             score = float(match.group(1))
             score = max(0.0, min(10.0, score))
-            logger.info("[LLM] Candidate scored: %.1f — title=%r channel=%r", score, title[:60] if title else "", channel)
+            logger.info("[LLM] Candidate scored: %.1f -- title=%r channel=%r", score, title[:60] if title else "", channel)
             return score
         except ValueError:
             pass
@@ -472,7 +472,7 @@ def generate_search_queries(
     ]
 
     if not ENABLE_AI or not is_available():
-        logger.info("[LLM] AI unavailable — using fallback search queries for %r", identifier)
+        logger.info("[LLM] AI unavailable -- using fallback search queries for %r", identifier)
         return fallbacks[:count]
 
     existing_str = ""
@@ -501,7 +501,7 @@ def generate_search_queries(
 
     result = generate(prompt, max_tokens=200)
     if not result:
-        logger.warning("[LLM] Search query generation returned empty for %r — using fallbacks", identifier)
+        logger.warning("[LLM] Search query generation returned empty for %r -- using fallbacks", identifier)
         return fallbacks[:count]
 
     try:
@@ -527,5 +527,5 @@ def generate_search_queries(
             except json.JSONDecodeError:
                 pass
 
-    logger.warning("[LLM] Could not parse search queries from response: %r — using fallbacks", result[:200])
+    logger.warning("[LLM] Could not parse search queries from response: %r -- using fallbacks", result[:200])
     return fallbacks[:count]

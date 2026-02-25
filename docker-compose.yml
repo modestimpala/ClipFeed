@@ -350,7 +350,7 @@ volumes:
   llm_data:
 
 networks:
-  # nginx, web, api, and minio — nginx's direct upstreams
+  # nginx, web, api, and minio -- nginx's direct upstreams
   frontend:
-  # api, worker, score-updater, minio, scout, and llm — internal processing
+  # api, worker, score-updater, minio, scout, and llm -- internal processing
   backend:

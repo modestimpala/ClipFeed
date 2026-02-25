@@ -23,12 +23,12 @@ export function displayUrl(url) {
 
 export function summarizeError(error) {
   if (!error) return null;
-  if (error.includes('403: Forbidden')) return 'Access denied (403) — try adding cookies in Tuning → Platform Cookies';
-  if (error.includes('404')) return 'Video not found (404) — link may be broken or removed';
-  if (error.includes('429')) return 'Rate limited — too many requests, will retry';
-  if (error.includes('nsig extraction failed')) return 'Download blocked — try adding cookies in Tuning → Platform Cookies';
-  if (error.includes('Unsupported URL')) return 'URL not supported — try a different link';
-  if (error.includes('Video unavailable')) return 'Video unavailable — may be deleted or private';
+  if (error.includes('403: Forbidden')) return 'Access denied (403) -- try adding cookies in Tuning → Platform Cookies';
+  if (error.includes('404')) return 'Video not found (404) -- link may be broken or removed';
+  if (error.includes('429')) return 'Rate limited -- too many requests, will retry';
+  if (error.includes('nsig extraction failed')) return 'Download blocked -- try adding cookies in Tuning → Platform Cookies';
+  if (error.includes('Unsupported URL')) return 'URL not supported -- try a different link';
+  if (error.includes('Video unavailable')) return 'Video unavailable -- may be deleted or private';
   const firstLine = error.split('\n').pop().trim();
   return firstLine.length > 120 ? `${firstLine.slice(0, 120)}…` : firstLine;
 }

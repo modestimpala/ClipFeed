@@ -22,7 +22,7 @@ func TestBlobToFloat32_Empty(t *testing.T) {
 }
 
 func TestBlobToFloat32_OddLength(t *testing.T) {
-	// Three bytes — not a multiple of 4, so must return nil.
+	// Three bytes -- not a multiple of 4, so must return nil.
 	if got := BlobToFloat32([]byte{0x01, 0x02, 0x03}); got != nil {
 		t.Errorf("BlobToFloat32(3-byte) = %v, want nil (non-multiple-of-4)", got)
 	}

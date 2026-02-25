@@ -79,7 +79,7 @@ class JobCancelled(Exception):
 
 
 class VideoRejected(Exception):
-    """Raised for validation rejections (not transient errors) — skips retries."""
+    """Raised for validation rejections (not transient errors) -- skips retries."""
     pass
 
 
@@ -97,7 +97,7 @@ def decrypt_cookie(encoded: str, secret: str) -> str | None:
     """Decrypt a cookie encrypted by the Go API (AES-256-GCM, nonce-prepended, base64).
     Returns None on any failure so the job can proceed without cookies."""
     if AESGCM is None:
-        log.warning("cryptography package not installed — cannot decrypt cookies")
+        log.warning("cryptography package not installed -- cannot decrypt cookies")
         return None
     try:
         key = hashlib.sha256(secret.encode()).digest()
@@ -119,11 +119,11 @@ def _detect_device() -> tuple[str, str]:
     try:
         import ctranslate2
         if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
-            log.info("CUDA device detected — Whisper will use GPU")
+            log.info("CUDA device detected -- Whisper will use GPU")
             return "cuda", "float16"
     except Exception:
         pass
-    log.info("No CUDA device found — Whisper will use CPU")
+    log.info("No CUDA device found -- Whisper will use CPU")
     return "cpu", "int8"
 
 
@@ -482,7 +482,7 @@ class Worker:
                     except Exception as e:
                         err_str = str(e).lower()
                         if "duplicate" in err_str or "unique constraint" in err_str:
-                            # Another source already has this external_id — skip it and continue
+                            # Another source already has this external_id -- skip it and continue
                             log.warning("Job %s: external_id %s already exists for platform %s, skipping external_id update",
                                         job_id[:8], source_metadata.get("id"), platform)
                             self._update_source(db, source_id,
@@ -500,7 +500,7 @@ class Worker:
                 log.info("Job %s: [step 1/4] downloading video", job_id[:8])
                 dl_start = time.time()
                 source_file = self.download(url, work_path, cookie_str=cookie_str)
-                log.info("Job %s: download complete in %.1fs — %s", job_id[:8], time.time() - dl_start, source_file.name)
+                log.info("Job %s: download complete in %.1fs -- %s", job_id[:8], time.time() - dl_start, source_file.name)
                 self._update_source(db, source_id, status="processing")
 
                 # Step 2: Extract metadata
@@ -1181,9 +1181,9 @@ class Worker:
             if llm_title and len(llm_title) > 3:
                 log.info("[LLM] Title generated for segment %d: %r", index, llm_title)
                 return llm_title
-            log.info("[LLM] Title generation returned empty/short for segment %d — falling back to heuristic", index)
+            log.info("[LLM] Title generation returned empty/short for segment %d -- falling back to heuristic", index)
         except Exception as e:
-            log.warning("[LLM] Title generation failed for segment %d: %s — falling back to heuristic", index, e)
+            log.warning("[LLM] Title generation failed for segment %d: %s -- falling back to heuristic", index, e)
 
         if transcript:
             words = transcript.split()[:10]
@@ -1210,9 +1210,9 @@ class Worker:
             if refined and isinstance(refined, list):
                 log.info("[LLM] Topics refined: %s -> %s", topics, refined)
                 return refined
-            log.info("[LLM] Topic refinement returned empty — keeping originals: %s", topics)
+            log.info("[LLM] Topic refinement returned empty -- keeping originals: %s", topics)
         except Exception as e:
-            log.warning("[LLM] Topic refinement failed: %s — keeping originals: %s", e, topics)
+            log.warning("[LLM] Topic refinement failed: %s -- keeping originals: %s", e, topics)
         return topics
 
 

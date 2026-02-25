@@ -346,7 +346,7 @@ def _build_user_profile(db: sqlite3.Connection, user_id: str) -> dict:
     ).fetchall()
     top_topics = [r["name"] for r in topic_rows]
 
-    # Watched topic engagement (broader signal — includes view/complete)
+    # Watched topic engagement (broader signal -- includes view/complete)
     if not top_topics:
         watched_rows = db.execute(
             """
@@ -447,10 +447,10 @@ def _build_user_profile(db: sqlite3.Connection, user_id: str) -> dict:
 def evaluate_candidates(db: sqlite3.Connection) -> None:
     """Score pending candidates via LLM with personalized user profiles and diversity caps."""
     if not llm_client.is_available():
-        log.info("[LLM] Provider unavailable — skipping candidate evaluation")
+        log.info("[LLM] Provider unavailable -- skipping candidate evaluation")
         return
     if not llm_client.ensure_model(auto_pull=SCOUT_LLM_AUTO_PULL):
-        log.info("[LLM] Model/config unavailable — skipping candidate evaluation")
+        log.info("[LLM] Model/config unavailable -- skipping candidate evaluation")
         return
 
     # Get all pending candidates with their owning user
@@ -601,7 +601,7 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
 
 def auto_approve(db: sqlite3.Connection) -> None:
     """Insert approved candidates into sources and jobs, mark ingested.
-    Respects per-user scout_auto_ingest preference — if disabled, leaves
+    Respects per-user scout_auto_ingest preference -- if disabled, leaves
     candidates as 'approved' for manual review.
     """
     cur = db.execute(
@@ -640,7 +640,7 @@ def auto_approve(db: sqlite3.Connection) -> None:
             auto_ingest_cache[user_id] = bool(pref_row[0]) if pref_row else True
 
         if user_id and not auto_ingest_cache.get(user_id, True):
-            log.info("Candidate %s approved but auto-ingest disabled for user %s — awaiting manual review",
+            log.info("Candidate %s approved but auto-ingest disabled for user %s -- awaiting manual review",
                      cand_id[:8], user_id[:8])
             continue
 
@@ -717,7 +717,7 @@ def process_triggers(db: sqlite3.Connection) -> bool:
 
 def main():
     log.info(
-        "Scout worker started — interval=%ds threshold=%.1f trigger_poll=%ds "
+        "Scout worker started -- interval=%ds threshold=%.1f trigger_poll=%ds "
         "max_llm_per_cycle=%d max_per_source=%d max_per_channel=%d exploration=%.0f%% auto_pull=%s",
         SCOUT_INTERVAL,
         LLM_THRESHOLD,

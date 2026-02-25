@@ -18,7 +18,7 @@ function manageCacheSize() {
 export const videoCache = {
   /**
    * Returns a cached blob URL for the clip if available, null otherwise.
-   * Never blocks — use this to check before falling back to streaming.
+   * Never blocks -- use this to check before falling back to streaming.
    */
   getCachedUrl(clipId) {
     return blobCache.get(clipId) || null;

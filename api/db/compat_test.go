@@ -65,7 +65,7 @@ func TestRewritePlaceholders_MultipleStringsAndPlaceholders(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Dialect helpers — CompatDB with nil DB is safe; these methods only inspect
+// Dialect helpers -- CompatDB with nil DB is safe; these methods only inspect
 // d.Dialect and build SQL strings.
 // ---------------------------------------------------------------------------
 

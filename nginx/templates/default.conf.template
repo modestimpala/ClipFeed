@@ -49,7 +49,7 @@ server {
         proxy_pass http://$minio_upstream;
         proxy_set_header Host minio:9000;
 
-        # Byte-range support — critical for iOS Safari video scrubbing.
+        # Byte-range support -- critical for iOS Safari video scrubbing.
         # Pass ranges through to MinIO so Safari can seek reliably.
         proxy_set_header Range $http_range;
         proxy_set_header If-Range $http_if_range;

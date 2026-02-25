@@ -94,7 +94,7 @@ export function TopicWeights({ currentWeights, onWeightsChange }) {
   if (topics.length === 0) {
     return (
       <div className="topic-weights-empty">
-        No topics available yet — add some clips first.
+        No topics available yet -- add some clips first.
       </div>
     );
   }
@@ -113,7 +113,7 @@ export function TopicWeights({ currentWeights, onWeightsChange }) {
         )}
       </div>
 
-      {/* Search — show when expanded or many topics */}
+      {/* Search -- show when expanded or many topics */}
       {(expanded || topics.length > COLLAPSED_COUNT) && (
         <div className="topic-search-wrap">
           <svg className="topic-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

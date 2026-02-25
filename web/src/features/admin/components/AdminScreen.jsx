@@ -230,7 +230,7 @@ function getHealthStatus(stats) {
   if (failedClips > 10)
     return { level: 'error', label: 'Clip Failures', detail: `${failedClips} clips failed processing` };
   if (failedJobs > 0)
-    return { level: 'warn', label: `${failedJobs} Failed Job${failedJobs > 1 ? 's' : ''}`, detail: 'Retries exhausted — review or clear' };
+    return { level: 'warn', label: `${failedJobs} Failed Job${failedJobs > 1 ? 's' : ''}`, detail: 'Retries exhausted -- review or clear' };
   if (failedClips > 0)
     return { level: 'warn', label: `${failedClips} Failed Clip${failedClips > 1 ? 's' : ''}`, detail: 'Clips stuck in failed state' };
   if (running > 0 || queued > 0)
@@ -386,7 +386,7 @@ export function AdminScreen({ onBack }) {
           <StatRow label="Memory" value={`${stats.system?.memory_mb || 0} MB`} />
           <StatRow label="Goroutines" value={fmt(stats.system?.goroutines)} />
           <StatRow label="Threads" value={stats.system?.os_threads || 0} />
-          <StatRow label="Go" value={stats.system?.go_version || '—'} />
+          <StatRow label="Go" value={stats.system?.go_version || '--'} />
         </div>
 
         <div className="admin-card accent-purple admin-card-clickable" onClick={() => setShowLogs(true)}>

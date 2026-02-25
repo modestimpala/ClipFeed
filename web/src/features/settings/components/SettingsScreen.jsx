@@ -44,7 +44,7 @@ export function SettingsScreen({ onLogout }) {
   function handleChange(key, value) {
     const updated = { ...prefs, [key]: value };
     setPrefs(updated);
-    // Debounce the API write — sliders fire onChange on every pixel of drag,
+    // Debounce the API write -- sliders fire onChange on every pixel of drag,
     // so we wait until the user pauses before persisting.
     clearTimeout(debouncedSave.current);
     debouncedSave.current = setTimeout(() => {

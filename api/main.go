@@ -120,7 +120,7 @@ func main() {
 				insecure)
 		}
 	} else {
-		log.Println("WARNING: ALLOW_INSECURE_DEFAULTS=true — running with default secrets (development mode)")
+		log.Println("WARNING: ALLOW_INSECURE_DEFAULTS=true -- running with default secrets (development mode)")
 	}
 
 	// --- Database ---

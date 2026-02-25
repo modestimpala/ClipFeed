@@ -25,7 +25,7 @@
 			header_up Range {http.request.header.Range}
 			header_up If-Range {http.request.header.If-Range}
 			# Stream response bytes to the client without buffering.
-			# Required for partial-content (206) responses — iOS Safari stalls
+			# Required for partial-content (206) responses -- iOS Safari stalls
 			# on video seeks when the proxy buffers the full response first.
 			flush_interval -1
 		}

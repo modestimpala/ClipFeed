@@ -25,7 +25,7 @@ sys.modules.setdefault("sentence_transformers", MagicMock())
 import worker
 
 # ---------------------------------------------------------------------------
-# Schema — matches the real SQLite migration (001_init.sql subset needed)
+# Schema -- matches the real SQLite migration (001_init.sql subset needed)
 # ---------------------------------------------------------------------------
 
 SCHEMA = """
@@ -282,7 +282,7 @@ class TestPopJobIntegration(IntegrationTestBase):
         row2 = w2._pop_job()
 
         self.assertIsNotNone(row1)
-        self.assertIsNone(row2, "Second pop_job should return None — job already claimed")
+        self.assertIsNone(row2, "Second pop_job should return None -- job already claimed")
 
 
 # ---------------------------------------------------------------------------
