@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthScreen } from '../features/auth/components/AuthScreen';
 import { FeedScreen } from '../features/feed/components/FeedScreen';
 import { IngestModal } from '../features/ingest/components/IngestModal';
 import { JobsScreen } from '../features/jobs/components/JobsScreen';
 import { SavedScreen } from '../features/saved/components/SavedScreen';
 import { SettingsScreen } from '../features/settings/components/SettingsScreen';
+import { AdminScreen } from '../features/admin/components/AdminScreen';
 import { api } from '../shared/api/clipfeedApi';
 import { Icons } from '../shared/ui/icons';
 import { InstallPrompt } from '../shared/ui/InstallPrompt';
@@ -13,6 +14,24 @@ export default function App() {
   const [authed, setAuthed] = useState(!!api.getToken());
   const [tab, setTab] = useState('feed');
   const [showIngest, setShowIngest] = useState(false);
+  
+  // Very basic routing for hidden admin page
+  const [route, setRoute] = useState(window.location.pathname);
+
+  useEffect(() => {
+    const handlePop = () => setRoute(window.location.pathname);
+    window.addEventListener('popstate', handlePop);
+    return () => window.removeEventListener('popstate', handlePop);
+  }, []);
+
+  function navigate(path) {
+    window.history.pushState({}, '', path);
+    setRoute(path);
+  }
+
+  if (route === '/admin') {
+    return <AdminScreen onBack={() => navigate('/')} />;
+  }
 
   function handleAuth() {
     setAuthed(true);

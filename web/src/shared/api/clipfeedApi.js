@@ -70,4 +70,9 @@ export const api = {
     request('POST', `/collections/${collectionId}/clips`, { clip_id: clipId }),
   removeFromCollection: (collectionId, clipId) =>
     request('DELETE', `/collections/${collectionId}/clips/${clipId}`),
+
+  // Admin
+  adminLogin: (username, password) => request('POST', '/admin/login', { username, password }),
+  getAdminStatus: () => request('GET', '/admin/status'),
+  getAdminLLMLogs: () => request('GET', '/admin/llm_logs'),
 };

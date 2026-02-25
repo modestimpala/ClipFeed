@@ -307,3 +307,17 @@ CREATE TABLE IF NOT EXISTS clip_summaries (
     model      TEXT NOT NULL,
     created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+-- --- LLM Logs ---
+
+CREATE TABLE IF NOT EXISTS llm_logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    system      TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    prompt      TEXT NOT NULL,
+    response    TEXT,
+    error       TEXT,
+    duration_ms INTEGER,
+    created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_llm_logs_created ON llm_logs(created_at DESC);

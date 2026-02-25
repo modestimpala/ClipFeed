@@ -174,14 +174,24 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[LLM] Generating summary for clip %s (transcript_len=%d)", clipID, len(transcript))
+	start := time.Now()
 	summaryText, modelName, err := generateSummaryWithLLM(prompt)
+	durationMs := time.Since(start).Milliseconds()
+	
 	if err != nil {
 		log.Printf("[LLM] Summary generation FAILED for clip %s: %v", clipID, err)
+		a.db.ExecContext(r.Context(),
+			`INSERT INTO llm_logs (system, model, prompt, error, duration_ms) VALUES (?, ?, ?, ?, ?)`,
+			"summary", modelName, prompt, err.Error(), durationMs)
 		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
 		return
 	}
 
 	log.Printf("[LLM] Summary generated for clip %s: model=%s summary_len=%d", clipID, modelName, len(summaryText))
+
+	a.db.ExecContext(r.Context(),
+		`INSERT INTO llm_logs (system, model, prompt, response, duration_ms) VALUES (?, ?, ?, ?, ?)`,
+		"summary", modelName, prompt, summaryText, durationMs)
 
 	if summaryText != "" {
 		if _, err := a.db.ExecContext(r.Context(),

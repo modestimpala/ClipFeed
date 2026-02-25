@@ -51,6 +51,8 @@ def _base_url() -> str:
         return (LLM_BASE_URL or LLM_URL).rstrip("/")
     if provider == "anthropic":
         return (LLM_BASE_URL or "https://api.anthropic.com/v1").rstrip("/")
+    if provider == "gemini":
+        return LLM_BASE_URL.rstrip("/") if LLM_BASE_URL else ""
     return (LLM_BASE_URL or "https://api.openai.com/v1").rstrip("/")
 
 
@@ -88,6 +90,8 @@ def _litellm_model(model: str | None = None) -> str:
         return f"ollama/{name}"
     if provider == "anthropic":
         return f"anthropic/{name}"
+    if provider == "gemini":
+        return f"gemini/{name}"
     return f"openai/{name}"
 
 
@@ -258,6 +262,22 @@ def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
         return False
 
 
+def _log_to_db(provider: str, model: str, prompt: str, response: str, error: str, duration_ms: int):
+    db_path = os.getenv("DB_PATH", "/data/clipfeed.db")
+    if not os.path.exists(db_path):
+        return
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn.execute(
+            "INSERT INTO llm_logs (system, model, prompt, response, error, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+            (provider, model, prompt, response, error, duration_ms)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Failed to log to llm_logs: {e}")
+
 def generate(
     prompt: str,
     model: str | None = None,
@@ -270,6 +290,9 @@ def generate(
     logger.info("[LLM] Generate request: provider=%s model=%s max_tokens=%d prompt_len=%d",
                 provider, model, max_tokens, len(prompt))
     logger.debug("[LLM] Prompt preview: %s", prompt_preview)
+    
+    start = time.time()
+    
     try:
         if provider != "ollama" and not LLM_API_KEY:
             logger.warning("[LLM] API key missing for provider=%s — aborting generate", provider)
@@ -278,7 +301,6 @@ def generate(
         params = _litellm_params(model, max_tokens)
         logger.debug("[LLM] LiteLLM params: model=%s api_base=%s", params.get("model"), params.get("api_base"))
 
-        start = time.time()
         response = completion(
             messages=[{"role": "user", "content": prompt}],
             timeout=GENERATE_TIMEOUT,
@@ -291,9 +313,13 @@ def generate(
         logger.info("[LLM] Generate complete: provider=%s model=%s elapsed=%.2fs response_len=%d",
                     provider, model, elapsed, len(result))
         logger.debug("[LLM] Response preview: %s", result_preview)
+        
+        _log_to_db(provider, model, prompt, result, "", int(elapsed * 1000))
         return result
     except Exception as e:
+        elapsed = time.time() - start
         logger.error("[LLM] Generate FAILED: provider=%s model=%s error=%s", provider, model, e)
+        _log_to_db(provider, model, prompt, "", str(e), int(elapsed * 1000))
         return ""
 
 
