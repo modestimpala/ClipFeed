@@ -13,6 +13,7 @@ import sqlite3
 import logging
 import threading
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 
@@ -196,41 +197,47 @@ def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
 
+    elapsed = INTERVAL
     while not shutdown.is_set():
-        try:
-            update_content_scores(db)
-        except Exception as e:
-            log.error(f"Score update failed: {e}")
+        Path("/tmp/health").touch(exist_ok=True)
+        
+        if elapsed >= INTERVAL:
+            elapsed = 0
             try:
-                db.execute("ROLLBACK")
-            except Exception:
-                pass
+                update_content_scores(db)
+            except Exception as e:
+                log.error(f"Score update failed: {e}")
+                try:
+                    db.execute("ROLLBACK")
+                except Exception:
+                    pass
 
-        try:
-            generate_co_occurrence_edges(db)
-        except Exception as e:
-            log.error(f"Co-occurrence edge generation failed: {e}")
             try:
-                db.execute("ROLLBACK")
-            except Exception:
-                pass
+                generate_co_occurrence_edges(db)
+            except Exception as e:
+                log.error(f"Co-occurrence edge generation failed: {e}")
+                try:
+                    db.execute("ROLLBACK")
+                except Exception:
+                    pass
 
-        try:
-            update_user_embeddings(db)
-        except Exception as e:
-            log.error(f"User embedding update failed: {e}")
-
-        # Reconnect on persistent errors
-        try:
-            db.execute("SELECT 1")
-        except Exception:
-            log.warning("DB connection lost, reconnecting")
             try:
-                db = open_db()
-            except Exception:
-                pass
+                update_user_embeddings(db)
+            except Exception as e:
+                log.error(f"User embedding update failed: {e}")
 
-        shutdown.wait(INTERVAL)
+            # Reconnect on persistent errors
+            try:
+                db.execute("SELECT 1")
+            except Exception:
+                log.warning("DB connection lost, reconnecting")
+                try:
+                    db = open_db()
+                except Exception:
+                    pass
+
+        shutdown.wait(10)
+        elapsed += 10
 
     db.close()
     log.info("Score updater shut down cleanly")

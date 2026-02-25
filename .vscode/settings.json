@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /home/user/ClipFeed && make test-api-docker 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

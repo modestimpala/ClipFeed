@@ -1,0 +1,41 @@
+{
+	admin off
+}
+
+# The address to listen on. Defaults to :80
+# Set SERVER_NAME=clipfeed.example.com to automatically enable Let's Encrypt HTTPS
+{$SERVER_NAME::80} {
+	# API
+	handle /api/* {
+		reverse_proxy {$API_UPSTREAM:api:8080}
+	}
+
+	# Health check
+	handle /health {
+		reverse_proxy {$API_UPSTREAM:api:8080}
+	}
+
+	# MinIO Direct Access
+	handle_path /storage/* {
+		reverse_proxy {$MINIO_UPSTREAM:minio:9000} {
+			header_up Host {http.reverse_proxy.upstream.hostport}
+		}
+		
+		# CORS
+		header Access-Control-Allow-Origin *
+		header Access-Control-Allow-Methods "GET, HEAD, OPTIONS"
+		header Accept-Ranges bytes
+		header X-Content-Type-Options "nosniff"
+	}
+
+	# Web Frontend
+	handle /* {
+		reverse_proxy {$WEB_UPSTREAM:web:3000}
+	}
+
+	# Security Headers
+	header X-Content-Type-Options "nosniff"
+	header X-Frame-Options "DENY"
+	header Referrer-Policy "strict-origin-when-cross-origin"
+	header Permissions-Policy "camera=(), microphone=(), geolocation=()"
+}

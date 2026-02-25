@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import time
 import uuid
+from pathlib import Path
 from collections import defaultdict
 
 import llm_client
@@ -723,6 +724,7 @@ def main():
     try:
         elapsed = 0
         while not shutdown:
+            Path("/tmp/health").touch(exist_ok=True)
             # Fast-poll: check for manually triggered sources
             try:
                 process_triggers(db)
