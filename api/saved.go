@@ -19,7 +19,7 @@ func (a *App) handleSaveClip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err := a.db.ExecContext(r.Context(),
-		`INSERT OR IGNORE INTO saved_clips (user_id, clip_id) VALUES (?, ?)`,
+		`INSERT INTO saved_clips (user_id, clip_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
 		userID, clipID)
 
 	if err != nil {

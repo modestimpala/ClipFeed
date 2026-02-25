@@ -2,21 +2,21 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"log"
 )
 
-// withTx executes fn inside a BEGIN IMMEDIATE / COMMIT transaction on a
-// dedicated connection. If fn returns an error, the transaction is rolled back.
-func withTx(ctx context.Context, db *sql.DB, fn func(conn *sql.Conn) error) error {
+// withTx executes fn inside a transaction on a dedicated connection.
+// Uses BEGIN IMMEDIATE for SQLite or plain BEGIN for Postgres.
+// If fn returns an error, the transaction is rolled back.
+func withTx(ctx context.Context, db *CompatDB, fn func(conn *CompatConn) error) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire conn: %w", err)
 	}
 	defer conn.Close()
 
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+	if _, err := conn.ExecContext(ctx, db.BeginTxSQL()); err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 

@@ -63,7 +63,7 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := a.db.ExecContext(r.Context(), `INSERT OR IGNORE INTO user_preferences (user_id) VALUES (?)`, userID); err != nil {
+	if _, err := a.db.ExecContext(r.Context(), `INSERT INTO user_preferences (user_id) VALUES (?) ON CONFLICT DO NOTHING`, userID); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to initialize preferences"})
 		return
 	}

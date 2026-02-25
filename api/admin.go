@@ -105,11 +105,11 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	var queuedJobs, runningJobs, completeJobs, failedJobs int
 	var rejectedJobs int
 
-	if err := a.db.QueryRow(`
+	if err := a.db.QueryRow(fmt.Sprintf(`
 		SELECT
 			(SELECT COUNT(*) FROM users),
 			(SELECT COUNT(*) FROM interactions),
-			COALESCE((SELECT page_count * page_size / 1024.0 / 1024.0 FROM pragma_page_count(), pragma_page_size()), 0),
+			%s,
 			(SELECT COUNT(*) FROM clips WHERE status = 'ready'),
 			(SELECT COUNT(*) FROM clips WHERE status = 'processing'),
 			(SELECT COUNT(*) FROM clips WHERE status = 'failed'),
@@ -121,7 +121,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM jobs WHERE status = 'complete'),
 			(SELECT COUNT(*) FROM jobs WHERE status = 'failed'),
 			(SELECT COUNT(*) FROM jobs WHERE status = 'rejected')
-	`).Scan(&totalUsers, &totalInteractions, &dbSizeMB,
+	`, a.db.DBSizeExpr())).Scan(&totalUsers, &totalInteractions, &dbSizeMB,
 		&readyClips, &processingClips, &failedClips, &expiredClips, &evictedClips, &totalBytes,
 		&queuedJobs, &runningJobs, &completeJobs, &failedJobs, &rejectedJobs); err != nil {
 		log.Printf("admin status: stats query failed: %v", err)
@@ -177,16 +177,16 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats["graphs"] = map[string]interface{}{
-		"interactions_7d": fetchDailyStats(`
-			SELECT date(created_at) as d, COUNT(*) 
+		"interactions_7d": fetchDailyStats(fmt.Sprintf(`
+			SELECT %s as d, COUNT(*) 
 			FROM interactions 
-			WHERE created_at >= date('now', '-7 days') 
-			GROUP BY d ORDER BY d ASC`),
-		"clips_7d": fetchDailyStats(`
-			SELECT date(created_at) as d, COUNT(*) 
+			WHERE created_at >= %s 
+			GROUP BY d ORDER BY d ASC`, a.db.DateOfExpr("created_at"), a.db.DateExpr("-7 days"))),
+		"clips_7d": fetchDailyStats(fmt.Sprintf(`
+			SELECT %s as d, COUNT(*) 
 			FROM clips 
-			WHERE created_at >= date('now', '-7 days') AND status = 'ready'
-			GROUP BY d ORDER BY d ASC`),
+			WHERE created_at >= %s AND status = 'ready'
+			GROUP BY d ORDER BY d ASC`, a.db.DateOfExpr("created_at"), a.db.DateExpr("-7 days"))),
 	}
 
 	// LLM / AI Stats — batched into one query
@@ -242,13 +242,14 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Auto-purge: delete failed jobs older than 48 hours (they can be re-ingested naturally)
 	// Also purge rejected jobs (validation failures like duration exceeded)
-	purged, _ := a.db.Exec(`
+	purged, _ := a.db.Exec(fmt.Sprintf(`
 		DELETE FROM jobs
 		WHERE (status = 'failed' AND attempts >= max_attempts
-		        AND datetime(COALESCE(completed_at, created_at)) <= datetime('now', '-48 hours'))
+		        AND %s)
 		   OR (status = 'rejected'
-		        AND datetime(COALESCE(completed_at, created_at)) <= datetime('now', '-24 hours'))
-	`)
+		        AND %s)
+	`, a.db.PurgeDatetimeComparison("COALESCE(completed_at, created_at)", "-48 hours"),
+		a.db.PurgeDatetimeComparison("COALESCE(completed_at, created_at)", "-24 hours")))
 	if purged != nil {
 		if n, _ := purged.RowsAffected(); n > 0 {
 			log.Printf("admin status: auto-purged %d stale failed jobs", n)

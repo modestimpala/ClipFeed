@@ -21,7 +21,7 @@ func newTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(4)
 	for _, p := range []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
@@ -35,7 +35,7 @@ func newTestApp(t *testing.T) *App {
 	}
 	t.Cleanup(func() { db.Close() })
 	return &App{
-		db:  db,
+		db:  NewCompatDB(db, DialectSQLite),
 		cfg: Config{JWTSecret: "test-secret", MinioBucket: "test-bucket"},
 	}
 }

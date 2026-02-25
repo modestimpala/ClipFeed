@@ -1,7 +1,7 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.24-alpine AS builder
 WORKDIR /src
 COPY go.mod ./
-COPY schema.sql .
+COPY *.sql .
 COPY *.go .
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/server .
 

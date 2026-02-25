@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -359,7 +358,7 @@ func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
 	jobID := uuid.New().String()
 	payload := fmt.Sprintf(`{"url":%q,"source_id":%q,"platform":%q}`, urlStr, sourceID, platform)
 
-	if err := withTx(r.Context(), a.db, func(conn *sql.Conn) error {
+	if err := withTx(r.Context(), a.db, func(conn *CompatConn) error {
 		if _, err := conn.ExecContext(r.Context(),
 			`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
 			sourceID, urlStr, platform, userID); err != nil {

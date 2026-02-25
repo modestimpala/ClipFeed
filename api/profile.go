@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -107,7 +108,7 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 
 	topicWeights, _ := json.Marshal(prefs["topic_weights"])
 
-	_, err := a.db.ExecContext(r.Context(), `
+	_, err := a.db.ExecContext(r.Context(), fmt.Sprintf(`
 		INSERT INTO user_preferences (user_id, exploration_rate, topic_weights, dedupe_seen_24h, min_clip_seconds, max_clip_seconds, autoplay, scout_threshold, scout_auto_ingest, diversity_mix, trending_boost, freshness_bias)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET
@@ -122,8 +123,8 @@ func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 			diversity_mix     = COALESCE(excluded.diversity_mix,     user_preferences.diversity_mix),
 			trending_boost    = COALESCE(excluded.trending_boost,    user_preferences.trending_boost),
 			freshness_bias    = COALESCE(excluded.freshness_bias,    user_preferences.freshness_bias),
-			updated_at        = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-	`, userID,
+			updated_at        = %s
+	`, a.db.NowUTC()), userID,
 		prefs["exploration_rate"],
 		string(topicWeights),
 		prefs["dedupe_seen_24h"],
@@ -178,14 +179,14 @@ func (a *App) handleSetCookie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cookieID := uuid.New().String()
-	_, err = a.db.ExecContext(r.Context(), `
+	_, err = a.db.ExecContext(r.Context(), fmt.Sprintf(`
 		INSERT INTO platform_cookies (id, user_id, platform, cookie_str, is_active, updated_at)
-		VALUES (?, ?, ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		VALUES (?, ?, ?, ?, 1, %s)
 		ON CONFLICT(user_id, platform) DO UPDATE SET
 			cookie_str = excluded.cookie_str,
 			is_active  = 1,
-			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-	`, cookieID, userID, platform, encrypted)
+			updated_at = %s
+	`, a.db.NowUTC(), a.db.NowUTC()), cookieID, userID, platform, encrypted)
 
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to save cookie"})
@@ -205,8 +206,8 @@ func (a *App) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := a.db.ExecContext(r.Context(),
-		`UPDATE platform_cookies SET is_active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-		 WHERE user_id = ? AND platform = ?`,
+		fmt.Sprintf(`UPDATE platform_cookies SET is_active = 0, updated_at = %s
+		 WHERE user_id = ? AND platform = ?`, a.db.NowUTC()),
 		userID, platform); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to remove cookie"})
 		return

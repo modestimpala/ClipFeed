@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -70,14 +71,18 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if userID != "" {
 		// freshness_bias → decay half-life: 0=672h (old ok), 0.5=168h (default), 1=24h (fresh only)
 		halfLife := 24.0 + (1.0-feedPrefs.FreshnessBias)*648.0
-		rows, err = a.db.QueryContext(r.Context(), `
+		ageHours := a.db.AgeHoursExpr("c.created_at")
+		randFloat := a.db.RandomFloat()
+		seenCutoff := a.db.DatetimeModifier("-24 hours")
+
+		rows, err = a.db.QueryContext(r.Context(), fmt.Sprintf(`
 			WITH prefs AS (
 				SELECT exploration_rate, min_clip_seconds, max_clip_seconds, dedupe_seen_24h
 				FROM user_preferences WHERE user_id = ?
 			),
 			seen AS (
 				SELECT clip_id FROM interactions
-				WHERE user_id = ? AND created_at > datetime('now', '-24 hours')
+				WHERE user_id = ? AND created_at > %s
 			)
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
@@ -85,7 +90,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			       COALESCE(c.source_id, ''),
 			       CAST(LENGTH(COALESCE(c.transcript, '')) AS REAL),
 			       CAST(COALESCE(c.file_size_bytes, 0) AS REAL),
-			       COALESCE((julianday('now') - julianday(c.created_at)) * 24.0, 0)
+			       COALESCE(%s, 0)
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
@@ -93,28 +98,30 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			  AND c.duration_seconds >= COALESCE((SELECT min_clip_seconds FROM prefs), 5)
 			  AND c.duration_seconds <= COALESCE((SELECT max_clip_seconds FROM prefs), 120)
 			ORDER BY
-			    (c.content_score * EXP(-((julianday('now') - julianday(c.created_at)) * 24.0) / ?) * (1.0 - COALESCE((SELECT exploration_rate FROM prefs), 0.3)))
-			    + (CAST(ABS(RANDOM()) AS REAL) / 9223372036854775807.0
-			       * COALESCE((SELECT exploration_rate FROM prefs), 0.3))
+			    (c.content_score * EXP(-%s / ?) * (1.0 - COALESCE((SELECT exploration_rate FROM prefs), 0.3)))
+			    + (%s * COALESCE((SELECT exploration_rate FROM prefs), 0.3))
 			    DESC
 			LIMIT ?
-		`, userID, userID, halfLife, fetchLimit)
+		`, seenCutoff, ageHours, ageHours, randFloat), userID, userID, halfLife, fetchLimit)
 	} else {
-		rows, err = a.db.QueryContext(r.Context(), `
+		ageHours := a.db.AgeHoursExpr("c.created_at")
+		randFloat := a.db.RandomFloat()
+
+		rows, err = a.db.QueryContext(r.Context(), fmt.Sprintf(`
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
 			       c.created_at, s.channel_name, s.platform, s.url,
 			       COALESCE(c.source_id, ''),
 			       CAST(LENGTH(COALESCE(c.transcript, '')) AS REAL),
 			       CAST(COALESCE(c.file_size_bytes, 0) AS REAL),
-			       COALESCE((julianday('now') - julianday(c.created_at)) * 24.0, 0)
+			       COALESCE(%s, 0)
 			FROM clips c
 			LEFT JOIN sources s ON c.source_id = s.id
 			WHERE c.status = 'ready'
-			ORDER BY (c.content_score * EXP(-((julianday('now') - julianday(c.created_at)) * 24.0) / 168.0) * 0.7)
-			    + (CAST(ABS(RANDOM()) AS REAL) / 9223372036854775807.0 * 0.3) DESC
+			ORDER BY (c.content_score * EXP(-%s / 168.0) * 0.7)
+			    + (%s * 0.3) DESC
 			LIMIT ?
-		`, fetchLimit)
+		`, ageHours, ageHours, randFloat), fetchLimit)
 	}
 
 	if err != nil {
@@ -139,20 +146,35 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize FTS5 query: escape double quotes and wrap in double quotes
-	// to prevent query syntax injection (AND, OR, NOT, NEAR, etc.)
-	q = `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
+	var rows *sql.Rows
+	var err error
 
-	rows, err := a.db.QueryContext(r.Context(), `
-		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
-		       c.topics, c.content_score, s.platform, s.channel_name, s.url
-		FROM clips_fts
-		JOIN clips c ON clips_fts.clip_id = c.id
-		LEFT JOIN sources s ON c.source_id = s.id
-		WHERE clips_fts MATCH ? AND c.status = 'ready'
-		ORDER BY bm25(clips_fts), c.content_score DESC
-		LIMIT 20
-	`, q)
+	if a.db.IsPostgres() {
+		rows, err = a.db.QueryContext(r.Context(), `
+			SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
+			       c.topics, c.content_score, s.platform, s.channel_name, s.url
+			FROM clips_fts
+			JOIN clips c ON clips_fts.clip_id = c.id
+			LEFT JOIN sources s ON c.source_id = s.id
+			WHERE clips_fts.tsv @@ plainto_tsquery('english', ?) AND c.status = 'ready'
+			ORDER BY ts_rank(clips_fts.tsv, plainto_tsquery('english', ?)) DESC, c.content_score DESC
+			LIMIT 20
+		`, q, q)
+	} else {
+		// Sanitize FTS5 query: escape double quotes and wrap in double quotes
+		// to prevent query syntax injection (AND, OR, NOT, NEAR, etc.)
+		ftsQ := `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
+		rows, err = a.db.QueryContext(r.Context(), `
+			SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
+			       c.topics, c.content_score, s.platform, s.channel_name, s.url
+			FROM clips_fts
+			JOIN clips c ON clips_fts.clip_id = c.id
+			LEFT JOIN sources s ON c.source_id = s.id
+			WHERE clips_fts MATCH ? AND c.status = 'ready'
+			ORDER BY bm25(clips_fts), c.content_score DESC
+			LIMIT 20
+		`, ftsQ)
+	}
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "search failed"})
 		return

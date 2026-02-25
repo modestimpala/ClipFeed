@@ -67,7 +67,7 @@ test-api-docker:
 		-v $(PWD)/api:/src \
 		-v $(PWD)/.cache/go-mod:/go/pkg/mod \
 		-v $(PWD)/.cache/go-build:/root/.cache/go-build \
-		-w /src golang:1.22-alpine sh -c 'go test ./... 2>&1 | cat'
+		-w /src golang:1.24-alpine sh -c 'go mod tidy && go test ./... 2>&1 | cat'
 
 dev-api:
 	cd api && go run .

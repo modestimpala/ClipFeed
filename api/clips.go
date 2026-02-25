@@ -202,7 +202,8 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 
 	if summaryText != "" {
 		if _, err := a.db.ExecContext(r.Context(),
-			`INSERT OR REPLACE INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)`,
+			`INSERT INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)
+			 ON CONFLICT(clip_id) DO UPDATE SET summary = EXCLUDED.summary, model = EXCLUDED.model`,
 			clipID, summaryText, modelName); err != nil {
 			log.Printf("[LLM] Failed to cache summary for clip %s: %v", clipID, err)
 		}

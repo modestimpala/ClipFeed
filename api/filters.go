@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -155,7 +156,7 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 		}
 	}
 	if fq.RecencyDays > 0 {
-		where = append(where, "c.created_at > datetime('now', ? || ' days')")
+		where = append(where, a.db.DatetimeRecencyExpr())
 		args = append(args, -fq.RecencyDays)
 	}
 	if fq.MinScore > 0 {
@@ -221,21 +222,20 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 		}
 	}
 
-	// Exclude seen
 	if userID != "" && dedupeSeen24h {
-		where = append(where, "c.id NOT IN (SELECT clip_id FROM interactions WHERE user_id = ? AND created_at > datetime('now', '-24 hours'))")
+		where = append(where, fmt.Sprintf("c.id NOT IN (SELECT clip_id FROM interactions WHERE user_id = ? AND created_at > %s)", a.db.DatetimeModifier("-24 hours")))
 		args = append(args, userID)
 	}
 
-	query := `SELECT c.id, c.title, c.description, c.duration_seconds,
+	query := fmt.Sprintf(`SELECT c.id, c.title, c.description, c.duration_seconds,
 	       c.thumbnail_key, c.topics, c.tags, c.content_score,
 	       c.created_at, s.channel_name, s.platform, s.url,
 	       COALESCE(c.source_id, ''),
 	       CAST(LENGTH(COALESCE(c.transcript, '')) AS REAL),
 	       CAST(COALESCE(c.file_size_bytes, 0) AS REAL),
-	       COALESCE((julianday('now') - julianday(c.created_at)) * 24.0, 0)
+	       COALESCE(%s, 0)
 	FROM clips c LEFT JOIN sources s ON c.source_id = s.id
-	WHERE ` + strings.Join(where, " AND ") + `
+	WHERE `, a.db.AgeHoursExpr("c.created_at")) + strings.Join(where, " AND ") + `
 	ORDER BY c.content_score DESC LIMIT 60`
 
 	rows, err := a.db.QueryContext(ctx, query, args...)

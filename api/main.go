@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	_ "modernc.org/sqlite"
@@ -25,8 +26,11 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+//go:embed schema_postgres.sql
+var schemaPostgresSQL string
+
 type App struct {
-	db    *sql.DB
+	db    *CompatDB
 	minio *minio.Client
 	cfg   Config
 
@@ -38,7 +42,9 @@ type App struct {
 }
 
 type Config struct {
+	DBDriver       string
 	DBPath         string
+	DBURL          string
 	L2RModelPath   string
 	MinioEndpoint  string
 	MinioAccess    string
@@ -50,11 +56,14 @@ type Config struct {
 	AdminPassword  string
 	Port           string
 	AllowedOrigins string
+	WorkerSecret   string
 }
 
 func loadConfig() Config {
 	return Config{
+		DBDriver:       getEnv("DB_DRIVER", "sqlite"),
 		DBPath:         getEnv("DB_PATH", "/data/clipfeed.db"),
+		DBURL:          getEnv("DB_URL", ""),
 		L2RModelPath:   getEnv("L2R_MODEL_PATH", "/data/l2r_model.json"),
 		MinioEndpoint:  getEnv("MINIO_ENDPOINT", "localhost:9000"),
 		MinioAccess:    getEnv("MINIO_ACCESS_KEY", "clipfeed"),
@@ -66,6 +75,7 @@ func loadConfig() Config {
 		AdminPassword:  getEnv("ADMIN_PASSWORD", "changeme_admin_password"),
 		Port:           getEnv("PORT", "8080"),
 		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
+		WorkerSecret:   getEnv("WORKER_SECRET", ""),
 	}
 }
 
@@ -89,44 +99,73 @@ func main() {
 		log.Println("WARNING: ADMIN_PASSWORD is set to an insecure default. Set a strong ADMIN_PASSWORD in production.")
 	}
 
-	// SQLite
-	db, err := sql.Open("sqlite", cfg.DBPath)
-	if err != nil {
-		log.Fatalf("failed to open database: %v", err)
+	// Database
+	var dialect Dialect
+	var rawDB *sql.DB
+
+	switch strings.ToLower(cfg.DBDriver) {
+	case "postgres", "postgresql":
+		dialect = DialectPostgres
+		if cfg.DBURL == "" {
+			log.Fatal("DB_URL is required when DB_DRIVER=postgres")
+		}
+		var err error
+		rawDB, err = sql.Open("pgx", cfg.DBURL)
+		if err != nil {
+			log.Fatalf("failed to open postgres: %v", err)
+		}
+		rawDB.SetMaxOpenConns(10)
+		rawDB.SetMaxIdleConns(5)
+		rawDB.SetConnMaxLifetime(5 * time.Minute)
+
+		if _, err := rawDB.Exec(schemaPostgresSQL); err != nil {
+			log.Fatalf("failed to init postgres schema: %v", err)
+		}
+		log.Println("Using Postgres database")
+
+	default:
+		dialect = DialectSQLite
+		var err error
+		rawDB, err = sql.Open("sqlite", cfg.DBPath)
+		if err != nil {
+			log.Fatalf("failed to open database: %v", err)
+		}
+		// Allow concurrent reads in WAL mode: writes still serialize naturally
+		rawDB.SetMaxOpenConns(4)
+		rawDB.SetMaxIdleConns(4)
+		rawDB.SetConnMaxLifetime(0)
+
+		for _, pragma := range []string{
+			"PRAGMA journal_mode=WAL",
+			"PRAGMA busy_timeout=5000",
+			"PRAGMA foreign_keys=ON",
+			"PRAGMA synchronous=NORMAL",
+		} {
+			if _, err := rawDB.Exec(pragma); err != nil {
+				log.Fatalf("pragma failed (%s): %v", pragma, err)
+			}
+		}
+
+		if _, err := rawDB.Exec(schemaSQL); err != nil {
+			log.Fatalf("failed to init schema: %v", err)
+		}
+
+		// Column migrations for existing databases (ALTER TABLE is not idempotent in SQLite).
+		for _, m := range []string{
+			"ALTER TABLE user_preferences ADD COLUMN scout_threshold REAL DEFAULT 6.0",
+			"ALTER TABLE user_preferences ADD COLUMN dedupe_seen_24h INTEGER DEFAULT 1",
+			"ALTER TABLE user_preferences ADD COLUMN scout_auto_ingest INTEGER DEFAULT 1",
+			"ALTER TABLE scout_sources ADD COLUMN force_check INTEGER DEFAULT 0",
+		} {
+			if _, err := rawDB.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+				log.Fatalf("migration failed (%s): %v", m, err)
+			}
+		}
+		log.Println("Using SQLite database")
 	}
+
+	db := NewCompatDB(rawDB, dialect)
 	defer db.Close()
-
-	// Single connection: prevents concurrent write conflicts
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(0)
-
-	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL",
-	} {
-		if _, err := db.Exec(pragma); err != nil {
-			log.Fatalf("pragma failed (%s): %v", pragma, err)
-		}
-	}
-
-	if _, err := db.Exec(schemaSQL); err != nil {
-		log.Fatalf("failed to init schema: %v", err)
-	}
-
-	// Column migrations for existing databases (ALTER TABLE is not idempotent in SQLite).
-	for _, m := range []string{
-		"ALTER TABLE user_preferences ADD COLUMN scout_threshold REAL DEFAULT 6.0",
-		"ALTER TABLE user_preferences ADD COLUMN dedupe_seen_24h INTEGER DEFAULT 1",
-		"ALTER TABLE user_preferences ADD COLUMN scout_auto_ingest INTEGER DEFAULT 1",
-		"ALTER TABLE scout_sources ADD COLUMN force_check INTEGER DEFAULT 0",
-	} {
-		if _, err := db.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			log.Fatalf("migration failed (%s): %v", m, err)
-		}
-	}
 
 	// MinIO
 	minioClient, err := minio.New(cfg.MinioEndpoint, &minio.Options{
