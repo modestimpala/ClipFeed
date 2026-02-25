@@ -275,7 +275,7 @@ func GenerateSummaryWithLLM(prompt string) (string, string, error) {
 			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
 			log.Printf("[LLM] Response read FAILED: %v", err)
 			return "", model, err
@@ -333,7 +333,7 @@ func GenerateSummaryWithLLM(prompt string) (string, string, error) {
 			return "", model, fmt.Errorf("llm request failed: status=%d", resp.StatusCode)
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if err != nil {
 			log.Printf("[LLM] Anthropic response read FAILED: %v", err)
 			return "", model, err

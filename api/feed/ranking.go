@@ -49,7 +49,9 @@ func (m *LTRModel) scoreTree(nodes []LTRTree, features []float64) float64 {
 		return 0
 	}
 	idx := 0
-	for idx < len(nodes) {
+	// steps is bounded by len(nodes): a valid tree of N nodes has at most N−1
+	// edges on any root-to-leaf path. Exceeding that means a cyclic reference.
+	for steps := 0; steps < len(nodes) && idx < len(nodes); steps++ {
 		n := nodes[idx]
 		if n.IsLeaf {
 			return n.LeafValue

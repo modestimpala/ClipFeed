@@ -251,7 +251,7 @@ class Worker:
                 return
 
             db.execute("BEGIN IMMEDIATE")
-            for slug, (tid, name, slug) in topic_ids.items():
+            for slug, (tid, name, _) in topic_ids.items():
                 db.execute(
                     "INSERT OR IGNORE INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0)",
                     (tid, name, slug, slug)

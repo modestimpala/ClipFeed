@@ -1,0 +1,5 @@
+# Whitelist — scout/Dockerfile is the only consumer of the root context.
+# It copies from scout/ and ingestion/ only, so exclude everything else.
+*
+!scout/
+!ingestion/
