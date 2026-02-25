@@ -33,10 +33,13 @@ nginx :80
 ## Quick Start
 
 ```bash
-# Clone and configure
-cp .env.example .env
-# Edit .env — set secrets and choose profiles (see below)
+# Clone the repo, then run the interactive setup script
+./setup.sh
+```
 
+`setup.sh` generates all cryptographic secrets, prompts for key settings (profiles, processing mode, LLM provider, storage limits), and writes a ready-to-use `.env`. Requires `openssl` on your `PATH`. If a `.env` already exists, the script offers to back it up before overwriting.
+
+```bash
 # Launch
 make up
 
@@ -44,7 +47,7 @@ make up
 make logs-worker
 ```
 
-**Choosing what to start — set `COMPOSE_PROFILES` in `.env`:**
+**Choosing what to start — set `COMPOSE_PROFILES` in `.env`** (prompted during setup):
 
 | `.env` setting | Services started |
 |---|---|
@@ -300,3 +303,4 @@ Both options work. Option B uses Anthropic's OpenAI SDK compatibility layer, whi
 - [x] Phase 4: Multi-user (auth, per-user preferences/embeddings/collections)
 
 Possible future directions: sharing, federation, public collections.
+TikTokApi (Playwright-based) / instagrapi for feed?
