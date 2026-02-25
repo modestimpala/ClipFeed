@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -25,6 +26,12 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 	if req.URL == "" {
 		writeJSON(w, 400, map[string]string{"error": "url is required"})
+		return
+	}
+
+	parsed, err := url.Parse(req.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		writeJSON(w, 400, map[string]string{"error": "url must be a valid http or https URL"})
 		return
 	}
 

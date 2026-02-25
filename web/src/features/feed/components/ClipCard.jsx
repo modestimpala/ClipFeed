@@ -165,7 +165,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
 
   const handleOpenSource = useCallback((e) => {
     e.stopPropagation();
-    if (clip?.source_url) window.open(clip.source_url, '_blank', 'noopener');
+    if (clip?.source_url) window.open(clip.source_url, '_blank', 'noopener,noreferrer');
   }, [clip?.source_url]);
 
   if (!clip) return <div className="clip-card" />;

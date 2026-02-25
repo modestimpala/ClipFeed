@@ -60,7 +60,7 @@ function SavedClipsList() {
           </div>
           <div className="saved-actions">
             {clip.source_url && (
-              <button className="saved-source-btn" onClick={() => window.open(clip.source_url, '_blank', 'noopener')} title="Open source">
+              <button className="saved-source-btn" onClick={() => window.open(clip.source_url, '_blank', 'noopener,noreferrer')} title="Open source">
                 <Icons.ExternalLink />
               </button>
             )}
