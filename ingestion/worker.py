@@ -61,6 +61,11 @@ JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "120"))
 shutdown = False
 
 
+class VideoRejected(Exception):
+    """Raised for validation rejections (not transient errors) — skips retries."""
+    pass
+
+
 def signal_handler(sig, frame):
     global shutdown
     log.info("Shutdown signal received, finishing current jobs...")
@@ -389,7 +394,7 @@ class Worker:
                 if source_metadata:
                     duration = source_metadata.get("duration", 0)
                     if MAX_VIDEO_DURATION > 0 and duration > MAX_VIDEO_DURATION:
-                        raise RuntimeError(f"Video duration ({duration}s) exceeds MAX_VIDEO_DURATION ({MAX_VIDEO_DURATION}s)")
+                        raise VideoRejected(f"Video too long ({duration}s, max {MAX_VIDEO_DURATION}s)")
 
                     db.execute(
                         """
@@ -463,6 +468,16 @@ class Worker:
                     (json.dumps({"clip_ids": clip_ids, "clip_count": len(clip_ids)}), job_id),
                 )
                 log.info("Job %s complete: %d clips created from %s", job_id[:8], len(clip_ids), url[:80])
+
+            except VideoRejected as e:
+                log.info("Job %s rejected: %s", job_id[:8], e)
+                db.execute(
+                    "UPDATE jobs SET status = 'rejected', error = ?, completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
+                    (str(e), job_id),
+                )
+                db.execute(
+                    "UPDATE sources SET status = 'rejected' WHERE id = ?", (source_id,)
+                )
 
             except Exception as e:
                 job_row = db.execute(

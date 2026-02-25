@@ -103,6 +103,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	var readyClips, processingClips, failedClips, expiredClips, evictedClips int
 	var totalBytes int64
 	var queuedJobs, runningJobs, completeJobs, failedJobs int
+	var rejectedJobs int
 
 	if err := a.db.QueryRow(`
 		SELECT
@@ -118,10 +119,11 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM jobs WHERE status = 'queued'),
 			(SELECT COUNT(*) FROM jobs WHERE status = 'running'),
 			(SELECT COUNT(*) FROM jobs WHERE status = 'complete'),
-			(SELECT COUNT(*) FROM jobs WHERE status = 'failed')
+			(SELECT COUNT(*) FROM jobs WHERE status = 'failed'),
+			(SELECT COUNT(*) FROM jobs WHERE status = 'rejected')
 	`).Scan(&totalUsers, &totalInteractions, &dbSizeMB,
 		&readyClips, &processingClips, &failedClips, &expiredClips, &evictedClips, &totalBytes,
-		&queuedJobs, &runningJobs, &completeJobs, &failedJobs); err != nil {
+		&queuedJobs, &runningJobs, &completeJobs, &failedJobs, &rejectedJobs); err != nil {
 		log.Printf("admin status: stats query failed: %v", err)
 	}
 
@@ -145,6 +147,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"running":  runningJobs,
 		"complete": completeJobs,
 		"failed":   failedJobs,
+		"rejected": rejectedJobs,
 	}
 
 	// Time-series for Graphs (last 7 days)
@@ -207,7 +210,75 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"avg_scout_llm_score": avgScore,
 	}
 
+	// Recent failed jobs with error details
+	type FailedJob struct {
+		ID        string  `json:"id"`
+		Title     *string `json:"title"`
+		URL       *string `json:"url"`
+		Error     *string `json:"error"`
+		Attempts  int     `json:"attempts"`
+		FailedAt  *string `json:"failed_at"`
+	}
+
+	failedRows, err := a.db.Query(`
+		SELECT j.id, s.title, s.url, j.error, j.attempts, j.completed_at
+		FROM jobs j
+		LEFT JOIN sources s ON j.source_id = s.id
+		WHERE j.status = 'failed'
+		ORDER BY COALESCE(j.completed_at, j.created_at) DESC
+		LIMIT 10
+	`)
+	var recentFailed []FailedJob
+	if err == nil {
+		defer failedRows.Close()
+		for failedRows.Next() {
+			var fj FailedJob
+			if err := failedRows.Scan(&fj.ID, &fj.Title, &fj.URL, &fj.Error, &fj.Attempts, &fj.FailedAt); err == nil {
+				recentFailed = append(recentFailed, fj)
+			}
+		}
+	}
+	stats["recent_failures"] = recentFailed
+
+	// Auto-purge: delete failed jobs older than 48 hours (they can be re-ingested naturally)
+	// Also purge rejected jobs (validation failures like duration exceeded)
+	purged, _ := a.db.Exec(`
+		DELETE FROM jobs
+		WHERE (status = 'failed' AND attempts >= max_attempts
+		        AND datetime(COALESCE(completed_at, created_at)) <= datetime('now', '-48 hours'))
+		   OR (status = 'rejected'
+		        AND datetime(COALESCE(completed_at, created_at)) <= datetime('now', '-24 hours'))
+	`)
+	if purged != nil {
+		if n, _ := purged.RowsAffected(); n > 0 {
+			log.Printf("admin status: auto-purged %d stale failed jobs", n)
+		}
+	}
+
 	writeJSON(w, 200, stats)
+}
+
+func (a *App) handleClearFailedJobs(w http.ResponseWriter, r *http.Request) {
+	// Reset associated sources back to pending so they can be re-ingested naturally
+	_, err := a.db.Exec(`
+		UPDATE sources SET status = 'pending'
+		WHERE id IN (
+			SELECT source_id FROM jobs
+			WHERE status = 'failed' AND source_id IS NOT NULL
+		)
+	`)
+	if err != nil {
+		log.Printf("admin clear-failed: source reset error: %v", err)
+	}
+
+	result, err := a.db.Exec(`DELETE FROM jobs WHERE status = 'failed'`)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to clear jobs"})
+		return
+	}
+	cleared, _ := result.RowsAffected()
+	log.Printf("admin: cleared %d failed jobs", cleared)
+	writeJSON(w, 200, map[string]interface{}{"cleared": cleared})
 }
 
 func (a *App) handleAdminLLMLogs(w http.ResponseWriter, r *http.Request) {
