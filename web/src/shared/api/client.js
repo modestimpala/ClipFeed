@@ -40,7 +40,7 @@ export async function request(method, path, body = null) {
     const data = await res.json();
 
     if (!res.ok) {
-      if (res.status === 401 && token) {
+      if (res.status === 401 && token && !path.startsWith('/admin')) {
         clearToken();
         window.location.reload();
       }
