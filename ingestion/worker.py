@@ -45,9 +45,12 @@ CLIP_TTL_DAYS = int(os.getenv("CLIP_TTL_DAYS", "30"))
 WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/clipfeed"))
 
 # Clip splitting parameters
-MIN_CLIP_SECONDS = 15
-MAX_CLIP_SECONDS = 90
-TARGET_CLIP_SECONDS = 45
+MIN_CLIP_SECONDS = int(os.getenv("MIN_CLIP_SECONDS", "15"))
+MAX_CLIP_SECONDS = int(os.getenv("MAX_CLIP_SECONDS", "90"))
+TARGET_CLIP_SECONDS = int(os.getenv("TARGET_CLIP_SECONDS", "45"))
+MAX_VIDEO_DURATION = int(os.getenv("MAX_VIDEO_DURATION", "3600"))
+MAX_DOWNLOAD_SIZE_MB = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "2048"))
+PROCESSING_MODE = os.getenv("PROCESSING_MODE", "transcode")
 SILENCE_NOISE_DB = -30
 SILENCE_MIN_DURATION = 0.5
 
@@ -384,6 +387,10 @@ class Worker:
                 log.info("Job %s: [step 0/4] fetching source metadata for %s", job_id[:8], url[:80])
                 source_metadata = self.fetch_source_metadata(url, work_path, cookie_str=cookie_str)
                 if source_metadata:
+                    duration = source_metadata.get("duration", 0)
+                    if MAX_VIDEO_DURATION > 0 and duration > MAX_VIDEO_DURATION:
+                        raise RuntimeError(f"Video duration ({duration}s) exceeds MAX_VIDEO_DURATION ({MAX_VIDEO_DURATION}s)")
+
                     db.execute(
                         """
                         UPDATE sources
@@ -511,6 +518,7 @@ class Worker:
             "--js-runtimes", "node",
             "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
             "--merge-output-format", "mp4",
+            "--max-filesize", f"{MAX_DOWNLOAD_SIZE_MB}M",
             "--output", output_template,
             "--no-overwrites",
             "--socket-timeout", "30",
@@ -899,27 +907,38 @@ class Worker:
         self, source: Path, output: Path,
         start: float, duration: float, metadata: dict
     ):
-        """Transcode a segment, optimized for mobile viewing."""
-        # Keep aspect ratio, target 720p max
-        scale_filter = "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
+        """Transcode or copy a segment, optimized for mobile viewing or speed."""
+        if PROCESSING_MODE == "copy":
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(start),
+                "-i", str(source),
+                "-t", str(duration),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(output),
+            ]
+        else:
+            # Keep aspect ratio, target 720p max
+            scale_filter = "scale='min(720,iw)':'min(1280,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2"
 
-        cmd = [
-            "ffmpeg", "-y",
-            "-threads", FFMPEG_THREADS,
-            "-ss", str(start),
-            "-i", str(source),
-            "-t", str(duration),
-            "-vf", scale_filter,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-threads", FFMPEG_THREADS,
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-movflags", "+faststart",
-            "-avoid_negative_ts", "make_zero",
-            str(output),
-        ]
+            cmd = [
+                "ffmpeg", "-y",
+                "-threads", FFMPEG_THREADS,
+                "-ss", str(start),
+                "-i", str(source),
+                "-t", str(duration),
+                "-vf", scale_filter,
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23",
+                "-threads", FFMPEG_THREADS,
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
+                "-avoid_negative_ts", "make_zero",
+                str(output),
+            ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
