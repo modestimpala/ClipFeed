@@ -46,6 +46,8 @@ type Config struct {
 	MinioBucket    string
 	MinioSSL       bool
 	JWTSecret      string
+	AdminUsername  string
+	AdminPassword  string
 	Port           string
 	AllowedOrigins string
 }
@@ -60,6 +62,8 @@ func loadConfig() Config {
 		MinioBucket:    getEnv("MINIO_BUCKET", "clips"),
 		MinioSSL:       getEnv("MINIO_USE_SSL", "false") == "true",
 		JWTSecret:      getEnv("JWT_SECRET", "supersecretkey"),
+		AdminUsername:  getEnv("ADMIN_USERNAME", "admin"),
+		AdminPassword:  getEnv("ADMIN_PASSWORD", "changeme_admin_password"),
 		Port:           getEnv("PORT", "8080"),
 		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
 	}
@@ -80,6 +84,9 @@ func main() {
 	}
 	if cfg.MinioSecret == "changeme123" {
 		log.Println("WARNING: MINIO_SECRET_KEY is set to an insecure default. Set a strong MINIO_SECRET_KEY in production.")
+	}
+	if cfg.AdminPassword == "changeme_admin_password" {
+		log.Println("WARNING: ADMIN_PASSWORD is set to an insecure default. Set a strong ADMIN_PASSWORD in production.")
 	}
 
 	// SQLite
@@ -165,6 +172,7 @@ func main() {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-Frame-Options", "DENY")
 			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 			next.ServeHTTP(w, r)
 		})
 	})
@@ -198,6 +206,7 @@ func main() {
 
 	r.Post("/api/auth/register", app.handleRegister)
 	r.Post("/api/auth/login", app.handleLogin)
+	r.Post("/api/admin/login", app.handleAdminLogin)
 	r.Get("/api/feed", app.optionalAuth(app.handleFeed))
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
@@ -206,6 +215,12 @@ func main() {
 	r.Get("/api/search", app.handleSearch)
 	r.Get("/api/topics", app.handleGetTopics)
 	r.Get("/api/topics/tree", app.handleGetTopicTree)
+
+	r.Group(func(r chi.Router) {
+		r.Use(app.adminAuthMiddleware)
+		r.Get("/api/admin/status", app.handleAdminStatus)
+		r.Get("/api/admin/llm_logs", app.handleAdminLLMLogs)
+	})
 
 	r.Group(func(r chi.Router) {
 		r.Use(app.authMiddleware)

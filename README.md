@@ -104,6 +104,11 @@ The ranking pipeline:
 3. Embedding-based L2R rescoring (cosine similarity of float32 blobs)
 4. 24-hour deduplication of recently seen clips
 
+# Ingestion Limits and Settings vs User Preferences
+
+- The Env Vars ensure the worker chops everything into healthy, manageable bite-sized files (e.g., ~45 seconds each).
+- The Settings Page lets you filter out any clips from the global pool that don't match your current mood.
+
 ## Storage Lifecycle
 
 Clips auto-expire after a configurable TTL (default 30 days). Saving or favoriting a clip sets `is_protected = 1` (via trigger), exempting it from eviction.
