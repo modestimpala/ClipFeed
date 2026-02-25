@@ -125,6 +125,13 @@ func (a *App) handleInteraction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify clip exists before inserting interaction
+	var exists int
+	if err := a.db.QueryRowContext(r.Context(), `SELECT 1 FROM clips WHERE id = ?`, clipID).Scan(&exists); err != nil {
+		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+		return
+	}
+
 	interactionID := uuid.New().String()
 	_, err := a.db.ExecContext(r.Context(), `
 		INSERT INTO interactions (id, user_id, clip_id, action, watch_duration_seconds, watch_percentage)

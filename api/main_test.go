@@ -941,12 +941,17 @@ func TestHandleListJobs(t *testing.T) {
 func TestHandleListJobs_IncludesSourceMetadataForFailedJobs(t *testing.T) {
 	app := newTestApp(t)
 	token := registerUser(t, app, "jobmeta", "password123")
+	userID := app.extractUserID(func() *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}())
 
 	sourceMeta := `{"id":"abc123","title":"Creator Deep Dive","uploader":"ClipFeed Labs","thumbnail":"https://img.example/abc.jpg"}`
 	_, err := app.db.Exec(`
-		INSERT INTO sources (id, url, platform, title, channel_name, thumbnail_url, metadata, status)
-		VALUES ('src-meta', 'https://youtube.com/watch?v=abc123', 'youtube', 'Creator Deep Dive', 'ClipFeed Labs', 'https://img.example/abc.jpg', ?, 'failed')
-	`, sourceMeta)
+		INSERT INTO sources (id, url, platform, title, channel_name, thumbnail_url, metadata, status, submitted_by)
+		VALUES ('src-meta', 'https://youtube.com/watch?v=abc123', 'youtube', 'Creator Deep Dive', 'ClipFeed Labs', 'https://img.example/abc.jpg', ?, 'failed', ?)
+	`, sourceMeta, userID)
 	if err != nil {
 		t.Fatalf("insert source: %v", err)
 	}
@@ -994,8 +999,9 @@ func TestHandleListJobs_IncludesSourceMetadataForFailedJobs(t *testing.T) {
 
 func TestHandleGetJob_NotFound(t *testing.T) {
 	app := newTestApp(t)
+	token := registerUser(t, app, "jobnotfound", "password123")
 
-	req := httptest.NewRequest("GET", "/api/jobs/nope", nil)
+	req := authRequest(t, app, "GET", "/api/jobs/nope", nil, token)
 	req = withChiParam(req, "id", "nope")
 	rec := httptest.NewRecorder()
 	app.handleGetJob(rec, req)

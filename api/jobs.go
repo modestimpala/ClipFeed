@@ -9,14 +9,16 @@ import (
 )
 
 func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
 	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT j.id, j.source_id, j.job_type, j.status, j.error,
 		       j.attempts, j.max_attempts, j.started_at, j.completed_at, j.created_at,
 		       s.url, s.platform, s.title, s.channel_name, s.thumbnail_url, s.external_id, s.metadata
 		FROM jobs j
 		LEFT JOIN sources s ON j.source_id = s.id
+		WHERE s.submitted_by = ?
 		ORDER BY j.created_at DESC LIMIT 50
-	`)
+	`, userID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to list jobs"})
 		return
@@ -54,15 +56,18 @@ func (a *App) handleListJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
 	jobID := chi.URLParam(r, "id")
 	var id, jobType, status, payloadStr, resultStr, createdAt string
 	var sourceID *string
 	var errMsg *string
 
 	err := a.db.QueryRowContext(r.Context(), `
-		SELECT id, source_id, job_type, status, payload, result, error, created_at
-		FROM jobs WHERE id = ?
-	`, jobID).Scan(&id, &sourceID, &jobType, &status, &payloadStr, &resultStr, &errMsg, &createdAt)
+		SELECT j.id, j.source_id, j.job_type, j.status, j.payload, j.result, j.error, j.created_at
+		FROM jobs j
+		LEFT JOIN sources s ON j.source_id = s.id
+		WHERE j.id = ? AND s.submitted_by = ?
+	`, jobID, userID).Scan(&id, &sourceID, &jobType, &status, &payloadStr, &resultStr, &errMsg, &createdAt)
 
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "job not found"})

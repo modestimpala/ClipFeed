@@ -11,6 +11,13 @@ func (a *App) handleSaveClip(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	clipID := chi.URLParam(r, "id")
 
+	// Verify clip exists before saving
+	var exists int
+	if err := a.db.QueryRowContext(r.Context(), `SELECT 1 FROM clips WHERE id = ?`, clipID).Scan(&exists); err != nil {
+		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+		return
+	}
+
 	_, err := a.db.ExecContext(r.Context(),
 		`INSERT OR IGNORE INTO saved_clips (user_id, clip_id) VALUES (?, ?)`,
 		userID, clipID)
