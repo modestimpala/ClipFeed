@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"runtime"
 	"strings"
@@ -103,7 +104,7 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	var totalBytes int64
 	var queuedJobs, runningJobs, completeJobs, failedJobs int
 
-	a.db.QueryRow(`
+	if err := a.db.QueryRow(`
 		SELECT
 			(SELECT COUNT(*) FROM users),
 			(SELECT COUNT(*) FROM interactions),
@@ -120,7 +121,9 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 			(SELECT COUNT(*) FROM jobs WHERE status = 'failed')
 	`).Scan(&totalUsers, &totalInteractions, &dbSizeMB,
 		&readyClips, &processingClips, &failedClips, &expiredClips, &evictedClips, &totalBytes,
-		&queuedJobs, &runningJobs, &completeJobs, &failedJobs)
+		&queuedJobs, &runningJobs, &completeJobs, &failedJobs); err != nil {
+		log.Printf("admin status: stats query failed: %v", err)
+	}
 
 	stats["database"] = map[string]interface{}{
 		"total_users":        totalUsers,
@@ -164,6 +167,9 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 				res = append(res, ds)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			log.Printf("fetchDailyStats: rows iteration error: %v", err)
+		}
 		return res
 	}
 
@@ -184,13 +190,15 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	var totalSummaries, evaluatedCandidates, approvedCandidates int
 	var avgScore float64
 	
-	a.db.QueryRow(`
+	if err := a.db.QueryRow(`
 		SELECT
 			(SELECT COUNT(*) FROM clip_summaries),
 			(SELECT COUNT(*) FROM scout_candidates WHERE llm_score IS NOT NULL),
 			(SELECT COUNT(*) FROM scout_candidates WHERE status = 'ingested'),
 			(SELECT COALESCE(AVG(llm_score), 0) FROM scout_candidates WHERE llm_score IS NOT NULL)
-	`).Scan(&totalSummaries, &evaluatedCandidates, &approvedCandidates, &avgScore)
+	`).Scan(&totalSummaries, &evaluatedCandidates, &approvedCandidates, &avgScore); err != nil {
+		log.Printf("admin status: AI stats query failed: %v", err)
+	}
 
 	stats["ai"] = map[string]interface{}{
 		"clip_summaries":      totalSummaries,

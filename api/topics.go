@@ -217,6 +217,9 @@ func (a *App) loadTopicGraph() *TopicGraph {
 			g.children[parentID.String] = append(g.children[parentID.String], n.ID)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("topic graph node iteration error: %v", err)
+	}
 
 	edgeRows, err := a.db.Query("SELECT source_id, target_id, relation, weight FROM topic_edges")
 	if err != nil {
@@ -238,6 +241,9 @@ func (a *App) loadTopicGraph() *TopicGraph {
 			Weight:   weight,
 		})
 		edgeCount++
+	}
+	if err := edgeRows.Err(); err != nil {
+		log.Printf("topic graph edge iteration error: %v", err)
 	}
 
 	log.Printf("Topic graph loaded: %d nodes, %d edges", len(g.nodes), edgeCount)
@@ -308,8 +314,13 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 				for rows.Next() {
 					var tid string
 					var w float64
-					rows.Scan(&tid, &w)
+					if err := rows.Scan(&tid, &w); err != nil {
+						continue
+					}
 					userAffinities[tid] = w
+				}
+				if err := rows.Err(); err != nil {
+					log.Printf("applyTopicBoost: user affinity rows error: %v", err)
 				}
 				rows.Close()
 			}
@@ -346,8 +357,13 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 			if err == nil {
 				for rows.Next() {
 					var cid, tid string
-					rows.Scan(&cid, &tid)
+					if err := rows.Scan(&cid, &tid); err != nil {
+						continue
+					}
 					clipTopicMap[cid] = append(clipTopicMap[cid], tid)
+				}
+				if err := rows.Err(); err != nil {
+					log.Printf("applyTopicBoost: clip topic rows error: %v", err)
 				}
 				rows.Close()
 			}
@@ -386,10 +402,15 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 				for embRows.Next() {
 					var cid string
 					var blob []byte
-					embRows.Scan(&cid, &blob)
+					if err := embRows.Scan(&cid, &blob); err != nil {
+						continue
+					}
 					if v := blobToFloat32(blob); v != nil {
 						clipEmbMap[cid] = v
 					}
+				}
+				if err := embRows.Err(); err != nil {
+					log.Printf("applyTopicBoost: embedding rows error: %v", err)
 				}
 				embRows.Close()
 			}
