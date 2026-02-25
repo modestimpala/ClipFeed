@@ -30,6 +30,7 @@ services:
       resources:
         limits:
           cpus: "${LLM_CPUS:-4}"
+          memory: "${LLM_MEMORY:-8g}"
         reservations:
           devices:
             - driver: nvidia

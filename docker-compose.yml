@@ -1,7 +1,7 @@
 services:
   # --- Object Storage (S3-compatible) ---
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     container_name: clipfeed-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -10,6 +10,9 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-changeme123}
     volumes:
       - minio_data:/data
+    networks:
+      - frontend
+      - backend
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -17,6 +20,15 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: "${MINIO_MEMORY:-512m}"
 
   # --- API Server ---
   api:
@@ -28,6 +40,9 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    networks:
+      - frontend
+      - backend
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 10s
@@ -65,6 +80,15 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: "${API_MEMORY:-256m}"
 
   # --- Ingestion Worker ---
   worker:
@@ -78,6 +102,8 @@ services:
         condition: service_healthy
       api:
         condition: service_healthy
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/health -mmin -2 2>/dev/null)\""]
       interval: 30s
@@ -114,10 +140,16 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     deploy:
       resources:
         limits:
           cpus: "${WORKER_CPUS:-4}"
+          memory: "${WORKER_MEMORY:-4g}"
 
   # --- Score Updater ---
   score-updater:
@@ -129,6 +161,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/health -mmin -2 2>/dev/null)\""]
       interval: 30s
@@ -147,6 +181,15 @@ services:
     security_opt:
       - no-new-privileges:true
     command: ["python", "score_updater.py"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: "${SCORE_UPDATER_MEMORY:-256m}"
 
   # --- Web Frontend ---
   web:
@@ -157,6 +200,8 @@ services:
     restart: unless-stopped
     depends_on:
       - api
+    networks:
+      - frontend
     read_only: true
     tmpfs:
       - /var/cache/nginx
@@ -171,22 +216,39 @@ services:
       - SETGID
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: "${WEB_MEMORY:-64m}"
 
   # --- Local LLM (Ollama) ---
   # Only starts with --profile ollama (not needed for cloud LLM providers)
   llm:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.5.13
     container_name: clipfeed-llm
     profiles: ["ollama"]
     restart: unless-stopped
+    networks:
+      - backend
     volumes:
       - llm_data:/root/.ollama
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
     deploy:
       resources:
         limits:
           cpus: "${LLM_CPUS:-4}"
+          memory: "${LLM_MEMORY:-8g}"
 
   # --- Content Scout Worker ---
   scout:
@@ -199,6 +261,8 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/health -mmin -2 2>/dev/null)\""]
       interval: 30s
@@ -224,20 +288,28 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     deploy:
       resources:
         limits:
           cpus: "${SCOUT_CPUS:-2}"
+          memory: "${SCOUT_MEMORY:-512m}"
 
   # --- Reverse Proxy ---
   nginx:
-    image: nginx:alpine
+    image: nginx:1.27.4-alpine
     container_name: clipfeed-proxy
     restart: unless-stopped
     depends_on:
       - api
       - web
       - minio
+    networks:
+      - frontend
     ports:
       - "80:80"
     environment:
@@ -261,9 +333,24 @@ services:
       - SETGID
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: "${NGINX_MEMORY:-64m}"
 
 volumes:
   minio_data:
   db_data:
   worker_tmp:
   llm_data:
+
+networks:
+  # nginx, web, api, and minio — nginx's direct upstreams
+  frontend:
+  # api, worker, score-updater, minio, scout, and llm — internal processing
+  backend:

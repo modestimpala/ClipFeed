@@ -6,7 +6,7 @@ services:
     profiles: ["disabled"]
 
   caddy:
-    image: caddy:alpine
+    image: caddy:2.9.1-alpine
     container_name: clipfeed-proxy
     restart: unless-stopped
     depends_on:
@@ -16,6 +16,8 @@ services:
         condition: service_started
       minio:
         condition: service_healthy
+    networks:
+      - frontend
     environment:
       SERVER_NAME: "${SERVER_NAME:-:80}"
       API_UPSTREAM: "${API_UPSTREAM:-api:8080}"
@@ -34,6 +36,15 @@ services:
       - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: "${CADDY_MEMORY:-128m}"
 
 volumes:
   caddy_data:
