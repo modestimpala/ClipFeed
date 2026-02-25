@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -1217,4 +1218,1035 @@ cfg := loadConfig()
 if cfg.AllowedOrigins != "https://example.com,https://app.example.com" {
 t.Errorf("AllowedOrigins = %q", cfg.AllowedOrigins)
 }
+}
+
+// ===========================================================================
+// Worker API endpoint tests
+// ===========================================================================
+
+// newTestAppWithWorkerSecret returns an App with WORKER_SECRET configured.
+func newTestAppWithWorkerSecret(t *testing.T) *App {
+	t.Helper()
+	app := newTestApp(t)
+	app.cfg.WorkerSecret = "test-worker-secret"
+	return app
+}
+
+func workerRequest(method, url string, body interface{}, secret string) *http.Request {
+	var b []byte
+	if body != nil {
+		b, _ = json.Marshal(body)
+	}
+	req := httptest.NewRequest(method, url, bytes.NewReader(b))
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
+	return req
+}
+
+// --- Worker Auth Middleware ---
+
+func TestWorkerAuth_NoSecretConfigured(t *testing.T) {
+	app := newTestApp(t) // WorkerSecret defaults to ""
+	handler := app.workerAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer anything")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 503 {
+		t.Errorf("status = %d, want 503 when WORKER_SECRET not configured", rec.Code)
+	}
+}
+
+func TestWorkerAuth_ValidSecret(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+	handler := app.workerAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer test-worker-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestWorkerAuth_InvalidSecret(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+	handler := app.workerAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer wrong-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestWorkerAuth_NoHeader(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+	handler := app.workerAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestWorkerAuth_NoBearerPrefix(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+	handler := app.workerAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "test-worker-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401 when missing Bearer prefix", rec.Code)
+	}
+}
+
+// --- Worker Claim Job ---
+
+func TestWorkerClaimJob_NoJobs(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	req := workerRequest("POST", "/api/internal/jobs/claim", nil, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerClaimJob(rec, req)
+
+	if rec.Code != 204 {
+		t.Errorf("status = %d, want 204 when no jobs", rec.Code)
+	}
+}
+
+func TestWorkerClaimJob_ClaimsQueuedJob(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc1', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload) VALUES ('wj1', 'wsrc1', 'ingest', 'queued', '{"url":"http://x.com"}')`)
+
+	req := workerRequest("POST", "/api/internal/jobs/claim", nil, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerClaimJob(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON(t, rec)
+	if resp["id"] != "wj1" {
+		t.Errorf("id = %v, want wj1", resp["id"])
+	}
+
+	// Verify job is now running
+	var status string
+	app.db.QueryRow("SELECT status FROM jobs WHERE id = 'wj1'").Scan(&status)
+	if status != "running" {
+		t.Errorf("job status = %q, want running", status)
+	}
+}
+
+func TestWorkerClaimJob_SkipsFutureRunAfter(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc2', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload, run_after)
+		VALUES ('wj2', 'wsrc2', 'ingest', 'queued', '{}', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '+1 hour'))`)
+
+	req := workerRequest("POST", "/api/internal/jobs/claim", nil, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerClaimJob(rec, req)
+
+	if rec.Code != 204 {
+		t.Errorf("status = %d, want 204 (job in backoff)", rec.Code)
+	}
+}
+
+func TestWorkerClaimJob_PriorityOrdering(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc3', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, priority, payload) VALUES ('wj-low', 'wsrc3', 'ingest', 'queued', 1, '{}')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, priority, payload) VALUES ('wj-high', 'wsrc3', 'ingest', 'queued', 10, '{}')`)
+
+	req := workerRequest("POST", "/api/internal/jobs/claim", nil, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerClaimJob(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["id"] != "wj-high" {
+		t.Errorf("claimed job id = %v, want wj-high (higher priority)", resp["id"])
+	}
+}
+
+// --- Worker Update Job ---
+
+func TestWorkerUpdateJob_Complete(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc4', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload) VALUES ('wj4', 'wsrc4', 'ingest', 'running', '{}')`)
+
+	body := map[string]interface{}{"status": "complete", "result": map[string]string{"clips": "3"}}
+	req := workerRequest("PUT", "/api/internal/jobs/wj4", body, "test-worker-secret")
+	req = withChiParam(req, "id", "wj4")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateJob(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var status string
+	app.db.QueryRow("SELECT status FROM jobs WHERE id = 'wj4'").Scan(&status)
+	if status != "complete" {
+		t.Errorf("job status = %q, want complete", status)
+	}
+}
+
+func TestWorkerUpdateJob_Failed(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc5', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload) VALUES ('wj5', 'wsrc5', 'ingest', 'running', '{}')`)
+
+	errMsg := "download timeout"
+	body := map[string]interface{}{"status": "failed", "error": errMsg}
+	req := workerRequest("PUT", "/api/internal/jobs/wj5", body, "test-worker-secret")
+	req = withChiParam(req, "id", "wj5")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateJob(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var status, jobError string
+	app.db.QueryRow("SELECT status, error FROM jobs WHERE id = 'wj5'").Scan(&status, &jobError)
+	if status != "failed" {
+		t.Errorf("job status = %q, want failed", status)
+	}
+	if jobError != errMsg {
+		t.Errorf("job error = %q, want %q", jobError, errMsg)
+	}
+}
+
+func TestWorkerUpdateJob_Requeue(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc6', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload) VALUES ('wj6', 'wsrc6', 'ingest', 'running', '{}')`)
+
+	body := map[string]interface{}{
+		"status":    "queued",
+		"error":     "rate limited",
+		"run_after": "2099-01-01T00:00:00Z",
+	}
+	req := workerRequest("PUT", "/api/internal/jobs/wj6", body, "test-worker-secret")
+	req = withChiParam(req, "id", "wj6")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateJob(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var status, runAfter string
+	app.db.QueryRow("SELECT status, run_after FROM jobs WHERE id = 'wj6'").Scan(&status, &runAfter)
+	if status != "queued" {
+		t.Errorf("job status = %q, want queued", status)
+	}
+	if runAfter != "2099-01-01T00:00:00Z" {
+		t.Errorf("run_after = %q, want 2099-01-01T00:00:00Z", runAfter)
+	}
+}
+
+func TestWorkerUpdateJob_InvalidStatus(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc7', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload) VALUES ('wj7', 'wsrc7', 'ingest', 'running', '{}')`)
+
+	body := map[string]interface{}{"status": "bogus"}
+	req := workerRequest("PUT", "/api/internal/jobs/wj7", body, "test-worker-secret")
+	req = withChiParam(req, "id", "wj7")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateJob(rec, req)
+
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestWorkerUpdateJob_InvalidBody(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	req := httptest.NewRequest("PUT", "/api/internal/jobs/wj99", bytes.NewBufferString("{bad"))
+	req = withChiParam(req, "id", "wj99")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateJob(rec, req)
+
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- Worker Get Job ---
+
+func TestWorkerGetJob_Found(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc8', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload, attempts, max_attempts) VALUES ('wj8', 'wsrc8', 'ingest', 'running', '{}', 2, 5)`)
+
+	req := workerRequest("GET", "/api/internal/jobs/wj8", nil, "test-worker-secret")
+	req = withChiParam(req, "id", "wj8")
+	rec := httptest.NewRecorder()
+	app.handleWorkerGetJob(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["status"] != "running" {
+		t.Errorf("status = %v, want running", resp["status"])
+	}
+	if resp["attempts"].(float64) != 2 {
+		t.Errorf("attempts = %v, want 2", resp["attempts"])
+	}
+	if resp["max_attempts"].(float64) != 5 {
+		t.Errorf("max_attempts = %v, want 5", resp["max_attempts"])
+	}
+}
+
+func TestWorkerGetJob_NotFound(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	req := workerRequest("GET", "/api/internal/jobs/nonexistent", nil, "test-worker-secret")
+	req = withChiParam(req, "id", "nonexistent")
+	rec := httptest.NewRecorder()
+	app.handleWorkerGetJob(rec, req)
+
+	if rec.Code != 404 {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// --- Worker Reclaim Stale ---
+
+func TestWorkerReclaimStale_RequeueBelowMaxAttempts(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc9', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload, attempts, max_attempts, started_at)
+		VALUES ('wj9', 'wsrc9', 'ingest', 'running', '{}', 1, 3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3 hours'))`)
+
+	body := map[string]interface{}{"stale_minutes": 60}
+	req := workerRequest("POST", "/api/internal/jobs/reclaim", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerReclaimStale(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON(t, rec)
+	if resp["requeued"].(float64) != 1 {
+		t.Errorf("requeued = %v, want 1", resp["requeued"])
+	}
+
+	var status string
+	app.db.QueryRow("SELECT status FROM jobs WHERE id = 'wj9'").Scan(&status)
+	if status != "queued" {
+		t.Errorf("job status = %q, want queued", status)
+	}
+}
+
+func TestWorkerReclaimStale_FailAtMaxAttempts(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc10', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload, attempts, max_attempts, started_at)
+		VALUES ('wj10', 'wsrc10', 'ingest', 'running', '{}', 3, 3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3 hours'))`)
+
+	body := map[string]interface{}{"stale_minutes": 60}
+	req := workerRequest("POST", "/api/internal/jobs/reclaim", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerReclaimStale(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["failed"].(float64) != 1 {
+		t.Errorf("failed = %v, want 1", resp["failed"])
+	}
+
+	var status string
+	app.db.QueryRow("SELECT status FROM jobs WHERE id = 'wj10'").Scan(&status)
+	if status != "failed" {
+		t.Errorf("job status = %q, want failed", status)
+	}
+}
+
+func TestWorkerReclaimStale_NoStaleJobs(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	// Fresh running job — should not be reclaimed
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc11', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload, attempts, max_attempts, started_at)
+		VALUES ('wj11', 'wsrc11', 'ingest', 'running', '{}', 1, 3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`)
+
+	body := map[string]interface{}{"stale_minutes": 120}
+	req := workerRequest("POST", "/api/internal/jobs/reclaim", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerReclaimStale(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["requeued"].(float64) != 0 || resp["failed"].(float64) != 0 {
+		t.Errorf("expected no reclaimed jobs, got requeued=%v failed=%v", resp["requeued"], resp["failed"])
+	}
+}
+
+// --- Worker Update Source ---
+
+func TestWorkerUpdateSource_Success(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc-upd', 'http://x.com', 'direct')`)
+
+	body := map[string]interface{}{
+		"status":       "ready",
+		"title":        "Cool Video",
+		"channel_name": "TestChannel",
+	}
+	req := workerRequest("PUT", "/api/internal/sources/wsrc-upd", body, "test-worker-secret")
+	req = withChiParam(req, "id", "wsrc-upd")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateSource(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+
+	var title, channelName string
+	app.db.QueryRow("SELECT title, channel_name FROM sources WHERE id = 'wsrc-upd'").Scan(&title, &channelName)
+	if title != "Cool Video" {
+		t.Errorf("title = %q, want Cool Video", title)
+	}
+	if channelName != "TestChannel" {
+		t.Errorf("channel_name = %q, want TestChannel", channelName)
+	}
+}
+
+func TestWorkerUpdateSource_EmptyFields(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc-empty', 'http://x.com', 'direct')`)
+
+	body := map[string]interface{}{}
+	req := workerRequest("PUT", "/api/internal/sources/wsrc-empty", body, "test-worker-secret")
+	req = withChiParam(req, "id", "wsrc-empty")
+	rec := httptest.NewRecorder()
+	app.handleWorkerUpdateSource(rec, req)
+
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400 when no fields to update", rec.Code)
+	}
+}
+
+// --- Worker Get Cookie ---
+
+func TestWorkerGetCookie_NoCookie(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc-cookie', 'http://x.com', 'youtube')`)
+
+	req := workerRequest("GET", "/api/internal/sources/wsrc-cookie/cookie?platform=youtube", nil, "test-worker-secret")
+	req = withChiParam(req, "id", "wsrc-cookie")
+	rec := httptest.NewRecorder()
+	app.handleWorkerGetCookie(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["cookie"] != nil {
+		t.Errorf("cookie = %v, want nil when no cookie set", resp["cookie"])
+	}
+}
+
+// --- Worker Create Clip ---
+
+func TestWorkerCreateClip_Success(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc-clip', 'http://x.com', 'youtube')`)
+
+	body := map[string]interface{}{
+		"id":               "wclip-1",
+		"source_id":        "wsrc-clip",
+		"title":            "Test Clip",
+		"duration_seconds": 30.0,
+		"start_time":       0.0,
+		"end_time":         30.0,
+		"storage_key":      "clips/wclip-1/video.mp4",
+		"thumbnail_key":    "clips/wclip-1/thumb.jpg",
+		"width":            1080,
+		"height":           1920,
+		"file_size_bytes":  5000000,
+		"transcript":       "Hello world this is a test",
+		"topics":           []string{"testing", "hello"},
+		"content_score":    0.5,
+		"expires_at":       "2099-12-31T00:00:00Z",
+		"platform":         "youtube",
+		"channel_name":     "TestChannel",
+	}
+	req := workerRequest("POST", "/api/internal/clips", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerCreateClip(rec, req)
+
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeJSON(t, rec)
+	if resp["id"] != "wclip-1" {
+		t.Errorf("id = %v, want wclip-1", resp["id"])
+	}
+
+	// Verify clip exists in DB
+	var title, status string
+	app.db.QueryRow("SELECT title, status FROM clips WHERE id = 'wclip-1'").Scan(&title, &status)
+	if title != "Test Clip" {
+		t.Errorf("clip title = %q, want Test Clip", title)
+	}
+	if status != "ready" {
+		t.Errorf("clip status = %q, want ready", status)
+	}
+
+	// Verify topics were created
+	var topicCount int
+	app.db.QueryRow("SELECT COUNT(*) FROM clip_topics WHERE clip_id = 'wclip-1'").Scan(&topicCount)
+	if topicCount != 2 {
+		t.Errorf("topic count = %d, want 2", topicCount)
+	}
+
+	// Verify FTS entry
+	var ftsCount int
+	app.db.QueryRow("SELECT COUNT(*) FROM clips_fts WHERE clip_id = 'wclip-1'").Scan(&ftsCount)
+	if ftsCount != 1 {
+		t.Errorf("FTS count = %d, want 1", ftsCount)
+	}
+}
+
+func TestWorkerCreateClip_WithEmbeddings(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc-emb', 'http://x.com', 'direct')`)
+
+	// Create a small fake embedding (4 float32s = 16 bytes)
+	embBytes := make([]byte, 16)
+	for i := range embBytes {
+		embBytes[i] = byte(i)
+	}
+	embB64 := "AAECAwQFBgcICQoLDA0ODw==" // base64 of bytes 0-15
+
+	body := map[string]interface{}{
+		"id":               "wclip-emb",
+		"source_id":        "wsrc-emb",
+		"title":            "Embedded Clip",
+		"duration_seconds": 20.0,
+		"start_time":       0.0,
+		"end_time":         20.0,
+		"storage_key":      "clips/wclip-emb/video.mp4",
+		"thumbnail_key":    "",
+		"width":            720,
+		"height":           1280,
+		"file_size_bytes":  2000000,
+		"transcript":       "test transcript",
+		"topics":           []string{},
+		"content_score":    0.6,
+		"expires_at":       "2099-12-31T00:00:00Z",
+		"text_embedding":   embB64,
+		"visual_embedding": embB64,
+		"model_version":    "v1",
+	}
+	req := workerRequest("POST", "/api/internal/clips", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerCreateClip(rec, req)
+
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify embeddings were stored
+	var modelVersion string
+	err := app.db.QueryRow("SELECT model_version FROM clip_embeddings WHERE clip_id = 'wclip-emb'").Scan(&modelVersion)
+	if err != nil {
+		t.Fatalf("embedding not found: %v", err)
+	}
+	if modelVersion != "v1" {
+		t.Errorf("model_version = %q, want v1", modelVersion)
+	}
+}
+
+func TestWorkerCreateClip_InvalidBody(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	req := httptest.NewRequest("POST", "/api/internal/clips", bytes.NewBufferString("{bad"))
+	rec := httptest.NewRecorder()
+	app.handleWorkerCreateClip(rec, req)
+
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- Worker Resolve Topic ---
+
+func TestWorkerResolveTopic_Create(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	body := map[string]string{"name": "Machine Learning"}
+	req := workerRequest("POST", "/api/internal/topics/resolve", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerResolveTopic(rec, req)
+
+	if rec.Code != 201 {
+		t.Fatalf("status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON(t, rec)
+	if resp["created"] != true {
+		t.Errorf("created = %v, want true", resp["created"])
+	}
+	if resp["id"] == nil || resp["id"] == "" {
+		t.Error("expected id in response")
+	}
+}
+
+func TestWorkerResolveTopic_ExistingTopic(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	app.db.Exec(`INSERT INTO topics (id, name, slug, path, depth) VALUES ('existing-t', 'cooking', 'cooking', 'cooking', 0)`)
+
+	body := map[string]string{"name": "cooking"}
+	req := workerRequest("POST", "/api/internal/topics/resolve", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerResolveTopic(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["created"] != false {
+		t.Errorf("created = %v, want false", resp["created"])
+	}
+	if resp["id"] != "existing-t" {
+		t.Errorf("id = %v, want existing-t", resp["id"])
+	}
+}
+
+func TestWorkerResolveTopic_EmptyName(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	body := map[string]string{"name": ""}
+	req := workerRequest("POST", "/api/internal/topics/resolve", body, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerResolveTopic(rec, req)
+
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// --- Worker Score Update ---
+
+func TestWorkerScoreUpdate_NoInteractions(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+
+	req := workerRequest("POST", "/api/internal/scores/update", nil, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerScoreUpdate(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["updated"].(float64) != 0 {
+		t.Errorf("updated = %v, want 0", resp["updated"])
+	}
+}
+
+func TestWorkerScoreUpdate_UpdatesWithSufficientViews(t *testing.T) {
+	app := newTestAppWithWorkerSecret(t)
+	token := registerUser(t, app, "scorer", "password123")
+	userID := app.extractUserID(func() *http.Request {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}())
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('wsrc-score', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, duration_seconds, storage_key, status, content_score) VALUES ('wc-score', 'wsrc-score', 30.0, 'key', 'ready', 0.5)`)
+
+	// Add 5+ views with 100% watch — should push score up
+	for i := 0; i < 6; i++ {
+		app.db.Exec(`INSERT INTO interactions (id, user_id, clip_id, action, watch_percentage)
+			VALUES (?, ?, 'wc-score', 'view', 1.0)`, fmt.Sprintf("int-v%d", i), userID)
+	}
+	for i := 0; i < 6; i++ {
+		app.db.Exec(`INSERT INTO interactions (id, user_id, clip_id, action)
+			VALUES (?, ?, 'wc-score', 'like')`, fmt.Sprintf("int-l%d", i), userID)
+	}
+
+	req := workerRequest("POST", "/api/internal/scores/update", nil, "test-worker-secret")
+	rec := httptest.NewRecorder()
+	app.handleWorkerScoreUpdate(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	resp := decodeJSON(t, rec)
+	if resp["updated"].(float64) < 1 {
+		t.Errorf("updated = %v, want >= 1", resp["updated"])
+	}
+
+	var newScore float64
+	app.db.QueryRow("SELECT content_score FROM clips WHERE id = 'wc-score'").Scan(&newScore)
+	if newScore <= 0.5 {
+		t.Errorf("score = %f, want > 0.5 after positive engagement", newScore)
+	}
+}
+
+// ===========================================================================
+// Admin authentication tests
+// ===========================================================================
+
+func TestAdminLogin_Success(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "secret-admin-pw"
+
+	body := map[string]string{"username": "admin", "password": "secret-admin-pw"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+
+	app.handleAdminLogin(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON(t, rec)
+	if resp["token"] == nil || resp["token"] == "" {
+		t.Error("expected token in response")
+	}
+}
+
+func TestAdminLogin_WrongUsername(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "secret-admin-pw"
+
+	body := map[string]string{"username": "notadmin", "password": "secret-admin-pw"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestAdminLogin_WrongPassword(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "secret-admin-pw"
+
+	body := map[string]string{"username": "admin", "password": "wrong"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestAdminLogin_InvalidBody(t *testing.T) {
+	app := newTestApp(t)
+
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewBufferString("{bad"))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+
+	if rec.Code != 400 {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestIsAdminToken_ValidAdminToken(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "secret-admin-pw"
+
+	// Login to get admin token
+	body := map[string]string{"username": "admin", "password": "secret-admin-pw"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+	resp := decodeJSON(t, rec)
+	adminToken := resp["token"].(string)
+
+	// Verify isAdminToken returns true
+	checkReq := httptest.NewRequest("GET", "/", nil)
+	checkReq.Header.Set("Authorization", "Bearer "+adminToken)
+	if !app.isAdminToken(checkReq) {
+		t.Error("isAdminToken returned false for valid admin token")
+	}
+}
+
+func TestIsAdminToken_UserTokenRejected(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "regularuser", "password123")
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	if app.isAdminToken(req) {
+		t.Error("isAdminToken returned true for a regular user token")
+	}
+}
+
+func TestIsAdminToken_InvalidToken(t *testing.T) {
+	app := newTestApp(t)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer not.a.valid.jwt")
+	if app.isAdminToken(req) {
+		t.Error("isAdminToken returned true for invalid token")
+	}
+}
+
+func TestIsAdminToken_NoHeader(t *testing.T) {
+	app := newTestApp(t)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	if app.isAdminToken(req) {
+		t.Error("isAdminToken returned true with no auth header")
+	}
+}
+
+func TestIsAdminToken_WrongSecret(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "pw1"
+
+	// Generate admin token
+	b, _ := json.Marshal(map[string]string{"username": "admin", "password": "pw1"})
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+	resp := decodeJSON(t, rec)
+	adminToken := resp["token"].(string)
+
+	// Check with a different JWT secret
+	app2 := newTestApp(t)
+	app2.cfg.JWTSecret = "completely-different-secret"
+	checkReq := httptest.NewRequest("GET", "/", nil)
+	checkReq.Header.Set("Authorization", "Bearer "+adminToken)
+	if app2.isAdminToken(checkReq) {
+		t.Error("isAdminToken returned true with a different JWT secret")
+	}
+}
+
+func TestAdminAuthMiddleware_BlocksNonAdmin(t *testing.T) {
+	app := newTestApp(t)
+	token := registerUser(t, app, "nonadmin", "password123")
+
+	handler := app.adminAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 401 {
+		t.Errorf("status = %d, want 401 for non-admin user", rec.Code)
+	}
+}
+
+func TestAdminAuthMiddleware_AllowsAdmin(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "pw"
+
+	b, _ := json.Marshal(map[string]string{"username": "admin", "password": "pw"})
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+	adminToken := decodeJSON(t, rec)["token"].(string)
+
+	var capturedUID string
+	handler := app.adminAuthMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedUID = r.Context().Value(userIDKey).(string)
+		writeJSON(w, 200, map[string]string{"ok": "true"})
+	}))
+
+	req = httptest.NewRequest("GET", "/admin/status", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	if capturedUID != "admin" {
+		t.Errorf("user_id = %q, want admin", capturedUID)
+	}
+}
+
+// --- Admin Status ---
+
+func TestAdminStatus_ReturnsStats(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.AdminUsername = "admin"
+	app.cfg.AdminPassword = "pw"
+
+	// Create some data
+	registerUser(t, app, "statuser", "password123")
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('stat-src', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO clips (id, source_id, duration_seconds, storage_key, status) VALUES ('stat-clip', 'stat-src', 30.0, 'key', 'ready')`)
+
+	// Get admin token
+	b, _ := json.Marshal(map[string]string{"username": "admin", "password": "pw"})
+	req := httptest.NewRequest("POST", "/api/admin/login", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	app.handleAdminLogin(rec, req)
+	adminToken := decodeJSON(t, rec)["token"].(string)
+
+	// Call status
+	req = httptest.NewRequest("GET", "/api/admin/status", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec = httptest.NewRecorder()
+	app.handleAdminStatus(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON(t, rec)
+	if resp["system"] == nil {
+		t.Error("missing system stats")
+	}
+	if resp["database"] == nil {
+		t.Error("missing database stats")
+	}
+	content := resp["content"].(map[string]interface{})
+	if content["ready"].(float64) < 1 {
+		t.Errorf("ready clips = %v, want >= 1", content["ready"])
+	}
+}
+
+// --- Admin Clear Failed Jobs ---
+
+func TestAdminClearFailedJobs(t *testing.T) {
+	app := newTestApp(t)
+
+	app.db.Exec(`INSERT INTO sources (id, url, platform) VALUES ('fail-src', 'http://x.com', 'direct')`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, error, attempts, max_attempts) VALUES ('fail-j1', 'fail-src', 'ingest', 'failed', 'some error', 3, 3)`)
+	app.db.Exec(`INSERT INTO jobs (id, source_id, job_type, status, payload) VALUES ('ok-j1', 'fail-src', 'ingest', 'queued', '{}')`)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/admin/clear-failed", nil)
+	app.handleClearFailedJobs(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	resp := decodeJSON(t, rec)
+	if resp["cleared"].(float64) < 1 {
+		t.Errorf("cleared = %v, want >= 1", resp["cleared"])
+	}
+
+	// Queued job should not be affected
+	var queuedCount int
+	app.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").Scan(&queuedCount)
+	if queuedCount != 1 {
+		t.Errorf("queued jobs = %d, want 1 (should not be cleared)", queuedCount)
+	}
+
+	// Source should be reset to pending for re-ingestion
+	var srcStatus string
+	app.db.QueryRow("SELECT status FROM sources WHERE id = 'fail-src'").Scan(&srcStatus)
+	if srcStatus != "pending" {
+		t.Errorf("source status = %q, want pending after clear", srcStatus)
+	}
+}
+
+// --- Slugify ---
+
+func TestSlugify(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Machine Learning", "machine-learning"},
+		{"cooking", "cooking"},
+		{"  spaces  around  ", "spaces-around"},
+		{"Special@#Characters!", "specialcharacters"},
+		{"hello-world", "hello-world"},
+		{"UPPER CASE", "upper-case"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := slugify(tc.input)
+			if got != tc.want {
+				t.Errorf("slugify(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Truncate ---
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("hello world", 5); got != "hello" {
+		t.Errorf("truncate(11 chars, 5) = %q, want hello", got)
+	}
+	if got := truncate("short", 100); got != "short" {
+		t.Errorf("truncate(short, 100) = %q, want short", got)
+	}
+	if got := truncate("", 5); got != "" {
+		t.Errorf("truncate(empty, 5) = %q, want empty", got)
+	}
 }
