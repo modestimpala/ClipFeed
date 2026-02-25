@@ -76,4 +76,5 @@ export const api = {
   adminLogin: (username, password) => request('POST', '/admin/login', { username, password }),
   getAdminStatus: () => request('GET', '/admin/status'),
   getAdminLLMLogs: () => request('GET', '/admin/llm_logs'),
+  clearFailedJobs: () => request('POST', '/admin/clear-failed'),
 };

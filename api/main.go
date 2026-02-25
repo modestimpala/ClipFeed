@@ -221,6 +221,7 @@ func main() {
 		r.Use(app.adminAuthMiddleware)
 		r.Get("/api/admin/status", app.handleAdminStatus)
 		r.Get("/api/admin/llm_logs", app.handleAdminLLMLogs)
+		r.Post("/api/admin/clear-failed", app.handleClearFailedJobs)
 	})
 
 	r.Group(func(r chi.Router) {
