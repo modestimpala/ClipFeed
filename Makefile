@@ -75,5 +75,11 @@ dev-api:
 dev-web:
 	cd web && npm run dev
 
+backup:
+	./scripts/backup.sh
+
+restore:
+	./scripts/restore.sh $(BACKUP_DIR)
+
 clean:
 	docker compose down -v --remove-orphans

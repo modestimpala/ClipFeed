@@ -30,8 +30,8 @@ func newTestApp(t *testing.T) *App {
 			t.Fatalf("pragma: %v", err)
 		}
 	}
-	if _, err := db.Exec(schemaSQL); err != nil {
-		t.Fatalf("schema: %v", err)
+	if err := runMigrations(db, DialectSQLite); err != nil {
+		t.Fatalf("schema migration: %v", err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return &App{

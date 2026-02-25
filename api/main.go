@@ -23,12 +23,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed schema.sql
-var schemaSQL string
-
-//go:embed schema_postgres.sql
-var schemaPostgresSQL string
-
 type App struct {
 	db    *CompatDB
 	minio *minio.Client
@@ -118,7 +112,7 @@ func main() {
 		rawDB.SetMaxIdleConns(5)
 		rawDB.SetConnMaxLifetime(5 * time.Minute)
 
-		if _, err := rawDB.Exec(schemaPostgresSQL); err != nil {
+		if err := runMigrations(rawDB, dialect); err != nil {
 			log.Fatalf("failed to init postgres schema: %v", err)
 		}
 		log.Println("Using Postgres database")
@@ -146,20 +140,8 @@ func main() {
 			}
 		}
 
-		if _, err := rawDB.Exec(schemaSQL); err != nil {
+		if err := runMigrations(rawDB, dialect); err != nil {
 			log.Fatalf("failed to init schema: %v", err)
-		}
-
-		// Column migrations for existing databases (ALTER TABLE is not idempotent in SQLite).
-		for _, m := range []string{
-			"ALTER TABLE user_preferences ADD COLUMN scout_threshold REAL DEFAULT 6.0",
-			"ALTER TABLE user_preferences ADD COLUMN dedupe_seen_24h INTEGER DEFAULT 1",
-			"ALTER TABLE user_preferences ADD COLUMN scout_auto_ingest INTEGER DEFAULT 1",
-			"ALTER TABLE scout_sources ADD COLUMN force_check INTEGER DEFAULT 0",
-		} {
-			if _, err := rawDB.Exec(m); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-				log.Fatalf("migration failed (%s): %v", m, err)
-			}
 		}
 		log.Println("Using SQLite database")
 	}

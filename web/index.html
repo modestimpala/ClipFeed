@@ -9,6 +9,13 @@
     <link rel="icon" href="/icon-192.png" />
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <title>ClipFeed</title>
+    <!-- Runtime configuration. Can be overridden during deployment. -->
+    <script>
+      window.__CONFIG__ = {
+        API_BASE: '/api',
+        STORAGE_BASE: ''
+      };
+    </script>
   </head>
   <body>
     <div id="root"></div>

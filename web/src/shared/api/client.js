@@ -1,4 +1,11 @@
-const API_BASE = '/api';
+const API_BASE = window.__CONFIG__?.API_BASE || '/api';
+const STORAGE_BASE = window.__CONFIG__?.STORAGE_BASE || '';
+
+export function resolveStorageUrl(path) {
+  if (!path) return path;
+  if (path.startsWith('http')) return path;
+  return `${STORAGE_BASE}${path}`;
+}
 
 export function getToken() {
   try {
