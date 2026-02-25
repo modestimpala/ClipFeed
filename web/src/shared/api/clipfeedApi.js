@@ -36,6 +36,9 @@ export const api = {
   getHistory: () => request('GET', '/me/history'),
 
   getJobs: () => request('GET', '/jobs'),
+  cancelJob: (id) => request('POST', `/jobs/${id}/cancel`),
+  retryJob: (id) => request('POST', `/jobs/${id}/retry`),
+  dismissJob: (id) => request('DELETE', `/jobs/${id}`),
 
   search: (q) => request('GET', `/search?q=${encodeURIComponent(q)}`),
 

@@ -41,6 +41,16 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 	jobID := uuid.New().String()
 	payload := fmt.Sprintf(`{"url":%q,"source_id":%q,"platform":%q}`, req.URL, sourceID, platform)
 
+	// Check for existing source with the same URL
+	var existingSourceID, existingStatus string
+	err = a.db.QueryRowContext(r.Context(),
+		`SELECT id, status FROM sources WHERE url = ? AND submitted_by = ? ORDER BY created_at DESC LIMIT 1`,
+		req.URL, userID).Scan(&existingSourceID, &existingStatus)
+	var warning string
+	if err == nil {
+		warning = fmt.Sprintf("This URL was already submitted (source %s, status: %s). Ingesting again.", existingSourceID, existingStatus)
+	}
+
 	if err := withTx(r.Context(), a.db, func(conn *CompatConn) error {
 		if _, err := conn.ExecContext(r.Context(),
 			`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
@@ -59,11 +69,16 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 202, map[string]interface{}{
+	result := map[string]interface{}{
 		"source_id": sourceID,
 		"job_id":    jobID,
 		"status":    "queued",
-	})
+	}
+	if warning != "" {
+		result["warning"] = warning
+		result["existing_source_id"] = existingSourceID
+	}
+	writeJSON(w, 202, result)
 }
 
 func detectPlatform(rawURL string) string {

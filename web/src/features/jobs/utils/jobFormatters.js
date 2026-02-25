@@ -38,4 +38,6 @@ export const STATUS_LABELS = {
   running: 'Processing',
   complete: 'Done',
   failed: 'Failed',
+  cancelled: 'Cancelled',
+  rejected: 'Rejected',
 };

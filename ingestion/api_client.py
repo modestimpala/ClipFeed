@@ -15,6 +15,11 @@ import requests
 log = logging.getLogger("worker.api_client")
 
 
+class DuplicateSourceError(Exception):
+    """Raised when a source update conflicts with an existing source (same platform + external_id)."""
+    pass
+
+
 class WorkerAPIClient:
     """HTTP client for the ClipFeed internal worker API."""
 
@@ -90,6 +95,8 @@ class WorkerAPIClient:
     def update_source(self, source_id: str, **fields):
         """Update source fields: status, title, channel_name, metadata, etc."""
         resp = self._put(f"/sources/{source_id}", data=fields)
+        if resp.status_code == 409:
+            raise DuplicateSourceError(resp.json().get("error", "duplicate source"))
         resp.raise_for_status()
 
     def get_cookie(self, source_id: str, platform: str) -> str | None:

@@ -24,6 +24,7 @@ COPY worker.py lifecycle.py score_updater.py llm_client.py api_client.py ./
 COPY l2r/ ./l2r/
 
 RUN groupadd -r -g 1000 appgroup && useradd -r -u 1000 -g appgroup -m appuser
+RUN mkdir -p /tmp/clipfeed && chown appuser:appgroup /tmp/clipfeed
 ENV PYTHONUNBUFFERED=1 HF_HOME=/home/appuser/.cache/huggingface
 USER appuser
 CMD ["python", "worker.py"]

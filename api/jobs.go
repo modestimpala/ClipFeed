@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -91,4 +92,78 @@ func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		"status": status, "payload": payload,
 		"result": result, "error": errMsg, "created_at": createdAt,
 	})
+}
+
+// POST /api/jobs/{id}/cancel — cancel a queued or running job
+func (a *App) handleCancelJob(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	jobID := chi.URLParam(r, "id")
+	nowExpr := a.db.NowUTC()
+
+	res, err := a.db.ExecContext(r.Context(), fmt.Sprintf(`
+		UPDATE jobs SET status = 'cancelled', error = 'Cancelled by user', completed_at = %s
+		WHERE id = ? AND status IN ('queued', 'running')
+		  AND source_id IN (SELECT id FROM sources WHERE submitted_by = ?)
+	`, nowExpr), jobID, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to cancel job"})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, 404, map[string]string{"error": "job not found or not cancellable"})
+		return
+	}
+	// Also reset the source so it doesn't stay in a stuck state
+	a.db.ExecContext(r.Context(),
+		`UPDATE sources SET status = 'cancelled' WHERE id = (SELECT source_id FROM jobs WHERE id = ?)`, jobID)
+	writeJSON(w, 200, map[string]string{"status": "cancelled"})
+}
+
+// POST /api/jobs/{id}/retry — retry a failed/cancelled/rejected job
+func (a *App) handleRetryJob(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	jobID := chi.URLParam(r, "id")
+
+	res, err := a.db.ExecContext(r.Context(), `
+		UPDATE jobs SET status = 'queued', error = NULL, run_after = NULL,
+		       attempts = 0, started_at = NULL, completed_at = NULL
+		WHERE id = ? AND status IN ('failed', 'cancelled', 'rejected')
+		  AND source_id IN (SELECT id FROM sources WHERE submitted_by = ?)
+	`, jobID, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to retry job"})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, 404, map[string]string{"error": "job not found or not retryable"})
+		return
+	}
+	// Reset source status so the worker picks it up
+	a.db.ExecContext(r.Context(),
+		`UPDATE sources SET status = 'pending' WHERE id = (SELECT source_id FROM jobs WHERE id = ?)`, jobID)
+	writeJSON(w, 200, map[string]string{"status": "queued"})
+}
+
+// DELETE /api/jobs/{id} — dismiss a completed/failed/cancelled job from the list
+func (a *App) handleDismissJob(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+	jobID := chi.URLParam(r, "id")
+
+	res, err := a.db.ExecContext(r.Context(), `
+		DELETE FROM jobs
+		WHERE id = ? AND status IN ('complete', 'failed', 'cancelled', 'rejected')
+		  AND source_id IN (SELECT id FROM sources WHERE submitted_by = ?)
+	`, jobID, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "failed to dismiss job"})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		writeJSON(w, 404, map[string]string{"error": "job not found or still active"})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "dismissed"})
 }

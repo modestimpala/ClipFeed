@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { api } from '../../../shared/api/clipfeedApi';
 import { displayUrl, formatDuration, STATUS_LABELS, summarizeError, timeAgo } from '../utils/jobFormatters';
 
 function formatMetric(value) {
@@ -17,10 +18,18 @@ function formatUploadDate(raw) {
   return d.toLocaleDateString();
 }
 
-export function JobCard({ job }) {
+function isStale(job) {
+  if (job.status !== 'running' || !job.started_at) return false;
+  const started = new Date(job.started_at).getTime();
+  return Date.now() - started > 5 * 60 * 1000; // 5 minutes
+}
+
+export function JobCard({ job, onAction }) {
   const [expanded, setExpanded] = useState(false);
+  const [acting, setActing] = useState(false);
   const errorSummary = summarizeError(job.error);
   const elapsed = formatDuration(job.started_at, job.completed_at);
+  const stale = isStale(job);
   const sourceMetadata = typeof job.source_metadata === 'object' ? job.source_metadata : null;
   const videoId = job.external_id || sourceMetadata?.id;
   const uploader = job.channel_name || sourceMetadata?.uploader || sourceMetadata?.channel;
@@ -42,17 +51,39 @@ export function JobCard({ job }) {
     sourceDuration
   );
 
+  const canCancel = job.status === 'queued' || job.status === 'running';
+  const canRetry = job.status === 'failed' || job.status === 'cancelled' || job.status === 'rejected';
+  const canDismiss = ['complete', 'failed', 'cancelled', 'rejected'].includes(job.status);
+
+  const handleAction = async (e, action) => {
+    e.stopPropagation();
+    if (acting) return;
+    setActing(true);
+    try {
+      if (action === 'cancel') await api.cancelJob(job.id);
+      else if (action === 'retry') await api.retryJob(job.id);
+      else if (action === 'dismiss') await api.dismissJob(job.id);
+      onAction?.();
+    } catch {
+      // ignore
+    } finally {
+      setActing(false);
+    }
+  };
+
   return (
     <div className={`job-card ${job.status === 'failed' && hasMoreDetails ? 'job-card-failed' : ''}`} onClick={() => hasMoreDetails && setExpanded(!expanded)}>
       <div className="job-card-header">
-        <div className={`job-status ${job.status}`} />
+        <div className={`job-status ${job.status}${stale ? ' stale' : ''}`} />
         <div className="job-info">
           <div className="job-title-row">
             <span className="job-type">{job.title || displayUrl(job.url) || job.job_type}</span>
             {job.platform && <span className="job-platform">{job.platform}</span>}
           </div>
           <div className="job-meta">
-            <span className={`job-status-label ${job.status}`}>{STATUS_LABELS[job.status] || job.status}</span>
+            <span className={`job-status-label ${job.status}`}>
+              {stale ? 'Stale' : (STATUS_LABELS[job.status] || job.status)}
+            </span>
             <span className="job-meta-sep" />
             <span>{timeAgo(job.created_at)}</span>
             {elapsed && <><span className="job-meta-sep" /><span>{elapsed}</span></>}
@@ -60,6 +91,17 @@ export function JobCard({ job }) {
               <><span className="job-meta-sep" /><span>attempt {job.attempts}/{job.max_attempts}</span></>
             )}
           </div>
+        </div>
+        <div className="job-actions">
+          {canCancel && (
+            <button className="job-action-btn cancel" disabled={acting} title="Cancel" onClick={(e) => handleAction(e, 'cancel')}>✕</button>
+          )}
+          {canRetry && (
+            <button className="job-action-btn retry" disabled={acting} title="Retry" onClick={(e) => handleAction(e, 'retry')}>↻</button>
+          )}
+          {canDismiss && (
+            <button className="job-action-btn dismiss" disabled={acting} title="Dismiss" onClick={(e) => handleAction(e, 'dismiss')}>✕</button>
+          )}
         </div>
       </div>
       {errorSummary && (

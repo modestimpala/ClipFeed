@@ -107,7 +107,7 @@ func (a *App) handleWorkerUpdateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch req.Status {
-	case "complete", "failed", "rejected":
+	case "complete", "failed", "rejected", "cancelled":
 		resultStr := "{}"
 		if req.Result != nil {
 			resultStr = string(*req.Result)
@@ -309,6 +309,12 @@ func (a *App) handleWorkerUpdateSource(w http.ResponseWriter, r *http.Request) {
 	args = append(args, sourceID)
 	query := "UPDATE sources SET " + strings.Join(sets, ", ") + " WHERE id = ?"
 	if _, err := a.db.ExecContext(r.Context(), query, args...); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "UNIQUE constraint") || strings.Contains(errMsg, "duplicate key") {
+			writeJSON(w, 409, map[string]string{"error": "duplicate source: a source with the same platform and external_id already exists"})
+			return
+		}
+		log.Printf("worker update source %s failed: %v", sourceID, err)
 		writeJSON(w, 500, map[string]string{"error": "failed to update source"})
 		return
 	}

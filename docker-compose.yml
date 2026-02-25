@@ -251,6 +251,7 @@ services:
       - /var/cache/nginx
       - /var/run
       - /tmp
+      - /etc/nginx/conf.d
     cap_drop:
       - ALL
     cap_add:

@@ -5,6 +5,53 @@
   padding-top: calc(24px + var(--safe-top));
 }
 
+/* Filter tabs */
+.job-filters {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.job-filter-btn {
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.job-filter-btn.active {
+  background: var(--accent, #6366f1);
+  color: #fff;
+  border-color: var(--accent, #6366f1);
+}
+
+.job-filter-count {
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255,255,255,0.25);
+  padding: 0 5px;
+  border-radius: 10px;
+  min-width: 16px;
+  text-align: center;
+  line-height: 16px;
+  color: inherit;
+}
+
+.job-filter-btn:not(.active) .job-filter-count {
+  background: var(--bg-surface);
+}
+
 .job-card {
   padding: 14px 16px;
   background: var(--bg-elevated);
@@ -36,8 +83,11 @@
 
 .job-status.queued { background: var(--text-muted); }
 .job-status.running { background: var(--warning); animation: pulse 1s infinite; }
+.job-status.running.stale { background: var(--error); animation: pulse 0.5s infinite; }
 .job-status.complete { background: var(--success); }
 .job-status.failed { background: var(--error); }
+.job-status.cancelled { background: var(--text-muted); }
+.job-status.rejected { background: var(--error); opacity: 0.6; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -100,6 +150,58 @@
 .job-status-label.failed { color: var(--error); }
 .job-status-label.running { color: var(--warning); }
 .job-status-label.complete { color: var(--success); }
+.job-status-label.cancelled { color: var(--text-muted); }
+.job-status-label.rejected { color: var(--error); opacity: 0.7; }
+
+/* Action buttons */
+.job-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.job-action-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.job-action-btn:hover {
+  background: var(--bg-surface);
+}
+
+.job-action-btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.job-action-btn.cancel:hover {
+  color: var(--error);
+  border-color: var(--error);
+}
+
+.job-action-btn.retry:hover {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.job-action-btn.dismiss:hover {
+  color: var(--text-muted);
+  border-color: var(--text-muted);
+}
 
 .job-error {
   margin-top: 10px;

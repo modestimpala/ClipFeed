@@ -21,6 +21,9 @@ server {
     listen 80;
     server_name _;
 
+    # Use Docker's embedded DNS for runtime hostname resolution
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    resolver_timeout 5s;
     # Security headers
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-Frame-Options "DENY" always;

@@ -68,9 +68,14 @@ SILENCE_MIN_DURATION = 0.5
 
 # Retry parameters
 RETRY_BASE_DELAY = 30  # seconds; doubles each attempt (30s, 60s, 120s, …)
-JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "120"))
+JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "15"))
 
 shutdown = False
+
+
+class JobCancelled(Exception):
+    """Raised when a job has been cancelled by the user."""
+    pass
 
 
 class VideoRejected(Exception):
@@ -425,6 +430,17 @@ class Worker:
                 pass
             return 0, 0
 
+    def _check_cancelled(self, db, job_id: str):
+        """Check if a job has been cancelled by the user. Raises JobCancelled if so."""
+        if self.http_mode:
+            info = self.api.get_job(job_id)
+            if info and info.get("status") == "cancelled":
+                raise JobCancelled(f"Job {job_id} cancelled by user")
+        else:
+            row = db.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row and row["status"] == "cancelled":
+                raise JobCancelled(f"Job {job_id} cancelled by user")
+
     def process_job(self, job_id: str, payload: dict):
         """Process a job. Uses HTTP API or direct SQLite depending on mode."""
         db = None if self.http_mode else open_db()
@@ -454,16 +470,33 @@ class Worker:
                     if MAX_VIDEO_DURATION > 0 and duration > MAX_VIDEO_DURATION:
                         raise VideoRejected(f"Video too long ({duration}s, max {MAX_VIDEO_DURATION}s)")
 
-                    self._update_source(db, source_id,
-                        external_id=source_metadata.get("id"),
-                        title=source_metadata.get("title"),
-                        channel_name=source_metadata.get("uploader") or source_metadata.get("channel"),
-                        thumbnail_url=source_metadata.get("thumbnail"),
-                        duration_seconds=source_metadata.get("duration"),
-                        metadata=json.dumps(source_metadata),
-                    )
+                    try:
+                        self._update_source(db, source_id,
+                            external_id=source_metadata.get("id"),
+                            title=source_metadata.get("title"),
+                            channel_name=source_metadata.get("uploader") or source_metadata.get("channel"),
+                            thumbnail_url=source_metadata.get("thumbnail"),
+                            duration_seconds=source_metadata.get("duration"),
+                            metadata=json.dumps(source_metadata),
+                        )
+                    except Exception as e:
+                        err_str = str(e).lower()
+                        if "duplicate" in err_str or "unique constraint" in err_str:
+                            # Another source already has this external_id — skip it and continue
+                            log.warning("Job %s: external_id %s already exists for platform %s, skipping external_id update",
+                                        job_id[:8], source_metadata.get("id"), platform)
+                            self._update_source(db, source_id,
+                                title=source_metadata.get("title"),
+                                channel_name=source_metadata.get("uploader") or source_metadata.get("channel"),
+                                thumbnail_url=source_metadata.get("thumbnail"),
+                                duration_seconds=source_metadata.get("duration"),
+                                metadata=json.dumps(source_metadata),
+                            )
+                        else:
+                            raise
 
                 # Step 1: Download
+                self._check_cancelled(db, job_id)
                 log.info("Job %s: [step 1/4] downloading video", job_id[:8])
                 dl_start = time.time()
                 source_file = self.download(url, work_path, cookie_str=cookie_str)
@@ -471,6 +504,7 @@ class Worker:
                 self._update_source(db, source_id, status="processing")
 
                 # Step 2: Extract metadata
+                self._check_cancelled(db, job_id)
                 log.info("Job %s: [step 2/4] extracting media metadata", job_id[:8])
                 media_metadata = self.extract_metadata(source_file)
                 merged_metadata = dict(source_metadata) if source_metadata else {}
@@ -483,11 +517,13 @@ class Worker:
                 )
 
                 # Step 3: Detect scenes and split
+                self._check_cancelled(db, job_id)
                 log.info("Job %s: [step 3/4] detecting scenes (duration=%.1fs)", job_id[:8], media_metadata.get("duration", 0))
                 segments = self.detect_scenes(source_file, media_metadata.get("duration", 0))
                 log.info("Job %s: detected %d segments", job_id[:8], len(segments))
 
                 # Step 4: Process each segment
+                self._check_cancelled(db, job_id)
                 log.info("Job %s: [step 4/4] processing %d segments (transcode, transcribe, embed, upload)", job_id[:8], len(segments))
                 clip_ids = []
                 segment_metadata = dict(media_metadata)
@@ -514,6 +550,10 @@ class Worker:
                 log.info("Job %s rejected: %s", job_id[:8], e)
                 self._fail_or_reject_job(db, job_id, source_id, str(e), rejected=True)
 
+            except JobCancelled:
+                log.info("Job %s cancelled by user", job_id[:8])
+                # Job status already set to 'cancelled' by the API; just clean up
+
             except Exception as e:
                 self._handle_job_error(db, job_id, source_id, e)
 
@@ -532,7 +572,7 @@ class Worker:
     _ALLOWED_SOURCE_COLUMNS = frozenset({
         'status', 'title', 'channel_name', 'platform', 'duration_seconds',
         'error', 'thumbnail_url', 'last_checked_at', 'check_interval_hours',
-        'force_check',
+        'force_check', 'external_id', 'metadata',
     })
 
     def _update_source(self, db, source_id, **fields):
@@ -645,7 +685,9 @@ class Worker:
             "yt-dlp",
             "--no-playlist",
             "--js-runtimes", "node",
-            "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            "--format",
+            "bestvideo[height<=1080]+bestaudio/best[height<=1080]"
+            "/bestvideo+bestaudio/best",
             "--merge-output-format", "mp4",
             "--max-filesize", f"{MAX_DOWNLOAD_SIZE_MB}M",
             "--output", output_template,
