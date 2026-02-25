@@ -595,6 +595,7 @@ func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
 		FROM clip_embeddings e
 		JOIN clips c ON e.clip_id = c.id AND c.status = 'ready'
 		WHERE e.clip_id != ?
+		LIMIT 500
 	`, clipID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "query failed"})

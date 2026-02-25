@@ -17,6 +17,7 @@ type IngestRequest struct {
 
 func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
+	maxBody(r, defaultBodyLimit)
 
 	var req IngestRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -86,17 +87,22 @@ func (a *App) handleIngest(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func detectPlatform(url string) string {
+func detectPlatform(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return "direct"
+	}
+	host := strings.ToLower(parsed.Hostname())
 	switch {
-	case strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be"):
+	case host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com" || host == "youtu.be":
 		return "youtube"
-	case strings.Contains(url, "vimeo.com"):
+	case host == "vimeo.com" || host == "www.vimeo.com":
 		return "vimeo"
-	case strings.Contains(url, "tiktok.com"):
+	case strings.HasSuffix(host, "tiktok.com"):
 		return "tiktok"
-	case strings.Contains(url, "instagram.com"):
+	case host == "instagram.com" || host == "www.instagram.com":
 		return "instagram"
-	case strings.Contains(url, "twitter.com") || strings.Contains(url, "x.com"):
+	case host == "twitter.com" || host == "www.twitter.com" || host == "x.com" || host == "www.x.com":
 		return "twitter"
 	default:
 		return "direct"

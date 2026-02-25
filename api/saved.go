@@ -47,6 +47,7 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN sources s ON c.source_id = s.id
 		WHERE sc.user_id = ?
 		ORDER BY sc.created_at DESC
+		LIMIT 200
 	`, userID)
 
 	if err != nil {
@@ -73,6 +74,9 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 			"topics": topics, "created_at": createdAt,
 			"platform": platform, "channel_name": channelName, "source_url": sourceURL,
 		})
+	}
+	if clips == nil {
+		clips = make([]map[string]interface{}, 0)
 	}
 	writeJSON(w, 200, map[string]interface{}{"clips": clips})
 }
@@ -113,6 +117,9 @@ func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
 			"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbnailKey),
 			"last_action": action, "at": at,
 		})
+	}
+	if history == nil {
+		history = make([]map[string]interface{}, 0)
 	}
 	writeJSON(w, 200, map[string]interface{}{"history": history})
 }

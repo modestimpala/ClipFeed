@@ -96,33 +96,37 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Database Stats
+	// Batched counts: database, content, queue stats in a single query
 	var totalUsers, totalInteractions int
-	a.db.QueryRow("SELECT COUNT(*) FROM users").Scan(&totalUsers)
-	a.db.QueryRow("SELECT COUNT(*) FROM interactions").Scan(&totalInteractions)
-	
-	// Get DB file size
-	var dbSizeMB float64 = 0
-	if a.cfg.DBPath != "" {
-		a.db.QueryRow("SELECT page_count * page_size / 1024.0 / 1024.0 FROM pragma_page_count(), pragma_page_size()").Scan(&dbSizeMB)
-	}
+	var dbSizeMB float64
+	var readyClips, processingClips, failedClips, expiredClips, evictedClips int
+	var totalBytes int64
+	var queuedJobs, runningJobs, completeJobs, failedJobs int
+
+	a.db.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM users),
+			(SELECT COUNT(*) FROM interactions),
+			COALESCE((SELECT page_count * page_size / 1024.0 / 1024.0 FROM pragma_page_count(), pragma_page_size()), 0),
+			(SELECT COUNT(*) FROM clips WHERE status = 'ready'),
+			(SELECT COUNT(*) FROM clips WHERE status = 'processing'),
+			(SELECT COUNT(*) FROM clips WHERE status = 'failed'),
+			(SELECT COUNT(*) FROM clips WHERE status = 'expired'),
+			(SELECT COUNT(*) FROM clips WHERE status = 'evicted'),
+			(SELECT COALESCE(SUM(file_size_bytes), 0) FROM clips WHERE status = 'ready'),
+			(SELECT COUNT(*) FROM jobs WHERE status = 'queued'),
+			(SELECT COUNT(*) FROM jobs WHERE status = 'running'),
+			(SELECT COUNT(*) FROM jobs WHERE status = 'complete'),
+			(SELECT COUNT(*) FROM jobs WHERE status = 'failed')
+	`).Scan(&totalUsers, &totalInteractions, &dbSizeMB,
+		&readyClips, &processingClips, &failedClips, &expiredClips, &evictedClips, &totalBytes,
+		&queuedJobs, &runningJobs, &completeJobs, &failedJobs)
 
 	stats["database"] = map[string]interface{}{
 		"total_users":        totalUsers,
 		"total_interactions": totalInteractions,
 		"size_mb":            dbSizeMB,
 	}
-
-	// Content Stats
-	var readyClips, processingClips, failedClips, expiredClips, evictedClips int
-	a.db.QueryRow("SELECT COUNT(*) FROM clips WHERE status = 'ready'").Scan(&readyClips)
-	a.db.QueryRow("SELECT COUNT(*) FROM clips WHERE status = 'processing'").Scan(&processingClips)
-	a.db.QueryRow("SELECT COUNT(*) FROM clips WHERE status = 'failed'").Scan(&failedClips)
-	a.db.QueryRow("SELECT COUNT(*) FROM clips WHERE status = 'expired'").Scan(&expiredClips)
-	a.db.QueryRow("SELECT COUNT(*) FROM clips WHERE status = 'evicted'").Scan(&evictedClips)
-
-	var totalBytes int64
-	a.db.QueryRow("SELECT COALESCE(SUM(file_size_bytes), 0) FROM clips WHERE status = 'ready'").Scan(&totalBytes)
 
 	stats["content"] = map[string]interface{}{
 		"ready":      readyClips,
@@ -132,13 +136,6 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		"evicted":    evictedClips,
 		"storage_gb": float64(totalBytes) / (1024 * 1024 * 1024),
 	}
-
-	// Queue Stats
-	var queuedJobs, runningJobs, completeJobs, failedJobs int
-	a.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").Scan(&queuedJobs)
-	a.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'running'").Scan(&runningJobs)
-	a.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'complete'").Scan(&completeJobs)
-	a.db.QueryRow("SELECT COUNT(*) FROM jobs WHERE status = 'failed'").Scan(&failedJobs)
 
 	stats["queue"] = map[string]interface{}{
 		"queued":   queuedJobs,
@@ -183,14 +180,17 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 			GROUP BY d ORDER BY d ASC`),
 	}
 
-	// LLM / AI Stats
+	// LLM / AI Stats — batched into one query
 	var totalSummaries, evaluatedCandidates, approvedCandidates int
 	var avgScore float64
 	
-	a.db.QueryRow("SELECT COUNT(*) FROM clip_summaries").Scan(&totalSummaries)
-	a.db.QueryRow("SELECT COUNT(*) FROM scout_candidates WHERE llm_score IS NOT NULL").Scan(&evaluatedCandidates)
-	a.db.QueryRow("SELECT COUNT(*) FROM scout_candidates WHERE status = 'ingested'").Scan(&approvedCandidates)
-	a.db.QueryRow("SELECT COALESCE(AVG(llm_score), 0) FROM scout_candidates WHERE llm_score IS NOT NULL").Scan(&avgScore)
+	a.db.QueryRow(`
+		SELECT
+			(SELECT COUNT(*) FROM clip_summaries),
+			(SELECT COUNT(*) FROM scout_candidates WHERE llm_score IS NOT NULL),
+			(SELECT COUNT(*) FROM scout_candidates WHERE status = 'ingested'),
+			(SELECT COALESCE(AVG(llm_score), 0) FROM scout_candidates WHERE llm_score IS NOT NULL)
+	`).Scan(&totalSummaries, &evaluatedCandidates, &approvedCandidates, &avgScore)
 
 	stats["ai"] = map[string]interface{}{
 		"clip_summaries":      totalSummaries,

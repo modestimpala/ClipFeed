@@ -87,6 +87,9 @@ func (a *App) handleListFilters(w http.ResponseWriter, r *http.Request) {
 			"is_default": isDefault == 1, "created_at": createdAt,
 		})
 	}
+	if filters == nil {
+		filters = make([]map[string]interface{}, 0)
+	}
 	writeJSON(w, 200, map[string]interface{}{"filters": filters})
 }
 

@@ -48,12 +48,15 @@ def main():
         freed_bytes = 0
         for clip in expired:
             try:
+                # Mark as expired in DB first, so a crash won't leave a "ready" clip with no storage
+                db.execute("UPDATE clips SET status = 'expired' WHERE id = ?", (clip["id"],))
+                db.commit()
+
                 if clip["storage_key"]:
                     minio_client.remove_object(MINIO_BUCKET, clip["storage_key"])
                 if clip["thumbnail_key"]:
                     minio_client.remove_object(MINIO_BUCKET, clip["thumbnail_key"])
 
-                db.execute("UPDATE clips SET status = 'expired' WHERE id = ?", (clip["id"],))
                 deleted_count += 1
                 freed_bytes += clip["file_size_bytes"] or 0
             except Exception as e:
@@ -83,12 +86,15 @@ def main():
                 if overage_bytes <= 0:
                     break
                 try:
+                    # Mark as evicted in DB first to avoid orphaned "ready" clips
+                    db.execute("UPDATE clips SET status = 'evicted' WHERE id = ?", (clip["id"],))
+                    db.commit()
+
                     if clip["storage_key"]:
                         minio_client.remove_object(MINIO_BUCKET, clip["storage_key"])
                     if clip["thumbnail_key"]:
                         minio_client.remove_object(MINIO_BUCKET, clip["thumbnail_key"])
 
-                    db.execute("UPDATE clips SET status = 'evicted' WHERE id = ?", (clip["id"],))
                     overage_bytes -= clip["file_size_bytes"] or 0
                     evicted += 1
                 except Exception as e:

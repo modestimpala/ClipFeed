@@ -13,6 +13,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const maxPasswordLen = 72 // bcrypt truncates at 72 bytes
+
 type contextKey string
 
 const userIDKey contextKey = "user_id"
@@ -31,6 +33,14 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Username) < 3 || len(req.Password) < 8 {
 		writeJSON(w, 400, map[string]string{"error": "username must be 3+ chars, password 8+ chars"})
+		return
+	}
+	if len(req.Password) > maxPasswordLen {
+		writeJSON(w, 400, map[string]string{"error": "password must not exceed 72 characters"})
+		return
+	}
+	if !strings.Contains(req.Email, "@") || len(req.Email) < 5 {
+		writeJSON(w, 400, map[string]string{"error": "a valid email address is required"})
 		return
 	}
 
@@ -89,6 +99,10 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(req.Password) > maxPasswordLen {
+		writeJSON(w, 401, map[string]string{"error": "invalid credentials"})
+		return
+	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)); err != nil {
 		writeJSON(w, 401, map[string]string{"error": "invalid credentials"})
 		return

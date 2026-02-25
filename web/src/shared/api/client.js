@@ -27,7 +27,13 @@ export async function request(method, path, body = null) {
     const res = await fetch(`${API_BASE}${path}`, opts);
     const data = await res.json();
 
-    if (!res.ok) throw { status: res.status, ...data };
+    if (!res.ok) {
+      if (res.status === 401 && token) {
+        clearToken();
+        window.location.reload();
+      }
+      throw { status: res.status, ...data };
+    }
     return data;
   } finally {
     clearTimeout(timeoutId);

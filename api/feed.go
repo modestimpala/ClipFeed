@@ -137,6 +137,10 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sanitize FTS5 query: escape double quotes and wrap in double quotes
+	// to prevent query syntax injection (AND, OR, NOT, NEAR, etc.)
+	q = `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
+
 	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
 		       c.topics, c.content_score, s.platform, s.channel_name, s.url

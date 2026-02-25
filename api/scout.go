@@ -90,6 +90,9 @@ func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	}
+	if sources == nil {
+		sources = make([]map[string]interface{}, 0)
+	}
 	writeJSON(w, 200, map[string]interface{}{"sources": sources})
 }
 
@@ -128,6 +131,9 @@ func (a *App) handleListScoutCandidates(w http.ResponseWriter, r *http.Request) 
 			"duration_seconds": duration, "llm_score": llmScore,
 			"status": status, "created_at": createdAt,
 		})
+	}
+	if candidates == nil {
+		candidates = make([]map[string]interface{}, 0)
 	}
 	writeJSON(w, 200, map[string]interface{}{"candidates": candidates})
 }
