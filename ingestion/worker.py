@@ -697,7 +697,10 @@ class Worker:
 
         if cookie_str:
             cookie_file = work_path / "cookies.txt"
-            cookie_file.write_text(cookie_str)
+            with os.fdopen(
+                os.open(cookie_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w"
+            ) as _f:
+                _f.write(cookie_str)
             cmd += ["--cookies", str(cookie_file)]
 
         cmd.append(url)
@@ -728,7 +731,10 @@ class Worker:
 
         if cookie_str:
             cookie_file = work_path / "cookies_metadata.txt"
-            cookie_file.write_text(cookie_str)
+            with os.fdopen(
+                os.open(cookie_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w"
+            ) as _f:
+                _f.write(cookie_str)
             cmd += ["--cookies", str(cookie_file)]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=90)

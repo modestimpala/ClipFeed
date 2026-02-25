@@ -648,6 +648,12 @@ def auto_approve(db: sqlite3.Connection) -> None:
         job_id = str(uuid.uuid4())
 
         try:
+            # Wrap all three writes in a savepoint so a mid-flight failure
+            # (crash, IntegrityError) never leaves a source row without a job,
+            # or a job without the candidate marked ingested.
+            # isolation_level=None means autocommit, so we manage atomicity
+            # explicitly with SAVEPOINT / RELEASE / ROLLBACK TO.
+            db.execute("SAVEPOINT ingest_candidate")
             db.execute(
                 """
                 INSERT INTO sources (id, url, platform, external_id, title, channel_name, duration_seconds, status)
@@ -670,8 +676,11 @@ def auto_approve(db: sqlite3.Connection) -> None:
                 "UPDATE scout_candidates SET status = 'ingested' WHERE id = ?",
                 (cand_id,),
             )
+            db.execute("RELEASE SAVEPOINT ingest_candidate")
             log.info("Ingested candidate %s -> source %s", cand_id[:8], source_id[:8])
         except sqlite3.IntegrityError as e:
+            db.execute("ROLLBACK TO SAVEPOINT ingest_candidate")
+            db.execute("RELEASE SAVEPOINT ingest_candidate")
             log.warning("Failed to ingest candidate %s (duplicate?): %s", cand_id[:8], e)
             db.execute(
                 "UPDATE scout_candidates SET status = 'rejected' WHERE id = ?",
