@@ -5,35 +5,14 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 ## Architecture
 
 ```
-                    +----------+
-                    |  nginx   |  :80
-                    +----+-----+
-                         |
-              +----------+----------+
-              |                     |
-        +-----+-----+       +------+------+
-        |  React PWA |       |   Go API    |  :8080
-        |    :3000   |       +------+------+
-        +------------+              |
-                          +---------+---------+
-                          |         |         |
-                    +-----++  +-----++  +-----++
-                    |SQLite|  | SQLite|  | MinIO |
-                    | (WAL)|  | FTS5  |  | :9000 |
-                    +------+  +---+--+  +-------+
-                                  |
-              +-------------------+-------------------+
-              |                   |                   |
-       +------+-------+   +------+-------+   +-------+------+
-       |   Worker     |   | Score Updater|   |   Scout *    |
-       | yt-dlp       |   | (periodic)   |   | LLM-backed  |
-       | ffmpeg       |   +--------------+   +--------------+
-       | whisper      |                            |
-       +--------------+                      +-----+------+
-                                             |   LLM *   |
-                                             |  (Ollama)  |
-                                             +------------+
-                                          * ai profile only
+nginx :80
+  ├── React PWA  (web/)
+  └── Go API :8080  (api/)
+        ├── SQLite WAL  (single connection, schema embedded)
+        ├── MinIO :9000  (S3-compatible object storage)
+        └── jobs table → Python Worker  (ingestion/)
+                           └── LLM :11434 ← Scout *  (scout/)
+                                              * ai profile only
 ```
 
 ## Stack
@@ -46,7 +25,7 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 | Score Updater | Python | Periodic content score recalculation |
 | Scout | Python (ai profile) | LLM-backed content discovery and scoring |
 | LLM | Ollama or hosted API (ai profile) | Local or hosted inference (summaries, scoring, scouting) |
-| Database | SQLite (WAL) or Postgres | Single-connection SQLite or pooled Postgres: users, clips, interactions, jobs, topic graph, embeddings |
+| Database | SQLite (WAL) | Single-connection WAL: users, clips, interactions, jobs, topic graph, embeddings |
 | Storage | MinIO | S3-compatible object storage for video and thumbnail files |
 | Search | SQLite FTS5 | Full-text search across clip titles, transcripts, channels |
 | Proxy | nginx | Reverse proxy, SPA routing, streaming optimization |
@@ -56,28 +35,31 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
 ```bash
 # Clone and configure
 cp .env.example .env
-# Edit .env with your secrets
+# Edit .env — set secrets and choose profiles (see below)
 
-# Launch core services
-docker compose up -d
+# Launch
+make up
 
 # Watch logs
-docker compose logs -f worker
+make logs-worker
 ```
 
-**With AI features (Scout + LLM):**
-```bash
-docker compose --profile ai up -d
+**Choosing what to start — set `COMPOSE_PROFILES` in `.env`:**
+
+| `.env` setting | Services started |
+|---|---|
+| `COMPOSE_PROFILES=` | Base stack (no AI) |
+| `COMPOSE_PROFILES=ai` | + Scout (cloud LLM) |
+| `COMPOSE_PROFILES=ai,ollama` | + Scout + local Ollama |
+
+**GPU acceleration** (requires NVIDIA Container Toolkit):
+```
+COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
 ```
 
 **HTTPS (Automatic Let's Encrypt via Caddy):**
 ```bash
 SERVER_NAME=clipfeed.yourdomain.com docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
-```
-
-**GPU Acceleration (requires NVIDIA Container Toolkit):**
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ai up -d
 ```
 
 The app will be available at `http://localhost`.
@@ -109,14 +91,27 @@ The ranking pipeline:
 3. Embedding-based L2R rescoring (cosine similarity of float32 blobs)
 4. 24-hour deduplication of recently seen clips
 
-# Ingestion Limits and Settings vs User Preferences
+## Ingestion Limits vs User Preferences
 
-- The Env Vars ensure the worker chops everything into healthy, manageable bite-sized files (e.g., ~45 seconds each).
-- The Settings Page lets you filter out any clips from the global pool that don't match your current mood.
+- **Env vars** control the worker pipeline (clip duration, download limits, processing mode) — these bound what enters the global pool.
+- **Settings page** lets each user filter the global pool to match their current preferences.
+
+Key env vars (in `.env`):
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROCESSING_MODE` | `transcode` | `transcode` (scale to 720p vertical) or `copy` (fast, keeps original) |
+| `MIN_CLIP_SECONDS` | `15` | Minimum clip duration after scene-split |
+| `MAX_CLIP_SECONDS` | `90` | Maximum clip duration after scene-split |
+| `TARGET_CLIP_SECONDS` | `45` | Target clip length |
+| `MAX_VIDEO_DURATION` | `3600` | Maximum source video length in seconds |
+| `MAX_DOWNLOAD_SIZE_MB` | `2048` | Maximum download size |
+| `MAX_WORKERS` | `4` | Max concurrent ingestion jobs |
+| `WHISPER_MODEL` | `medium` | faster-whisper model size |
+| `CLIP_TTL_DAYS` | `30` | Days before unprotected clips expire |
+| `SCORE_UPDATE_INTERVAL` | `900` | Seconds between score recalculation passes |
 
 ## Backup & Restore
-
-No built-in persistent volumes are safe forever. You can create a snapshot of the SQLite database and MinIO storage:
 
 ```bash
 make backup
@@ -128,7 +123,7 @@ make restore BACKUP_DIR=backups/YYYYMMDD_HHMMSS
 
 ## Storage Lifecycle
 
-Clips auto-expire after a configurable TTL (default 30 days). Saving or favoriting a clip sets `is_protected = 1` (via trigger), exempting it from eviction.
+Clips auto-expire after `CLIP_TTL_DAYS` (default 30 days). Saving or favoriting a clip sets `is_protected = 1` (via trigger), exempting it from eviction.
 
 ```bash
 make lifecycle          # run manually
@@ -141,16 +136,16 @@ Or add to crontab:
 
 ## Alternate Database (Postgres)
 
-ClipFeed defaults to a single-file SQLite database configured for WAL. This natively serializes writes and allows concurrent reads, comfortably handling ~30-50 concurrent active users.
+ClipFeed defaults to SQLite (WAL mode), which comfortably handles ~30–50 concurrent active users.
 
-If you anticipate significant load (100+ concurrent active users) or team/multi-tenant deployments, you can switch to PostgreSQL:
+For heavier load (100+ concurrent users) or multi-tenant deployments, switch to PostgreSQL:
 
-1. Update `.env`: `DB_DRIVER=postgres` and `DB_URL=postgres://user:pass@host:5432/clipfeed`
-2. Restart the API. The Go backend automatically initializes the `schema_migrations` and applies the Postgres schemas on boot.
+1. Set `DB_DRIVER=postgres` and `DB_URL=postgres://user:pass@host:5432/clipfeed` in `.env`
+2. Restart the API — the backend initializes schema on boot automatically.
 
 ## Frontend Configuration
 
-The React frontend handles configuration at runtime using `window.__CONFIG__` rather than requiring a static build. To deploy the UI on Vercel/Netlify/Pages, edit `web/index.html`:
+The React frontend reads `window.__CONFIG__` at runtime, so the same build can be pointed at any backend. To deploy the UI on Vercel/Netlify/Pages, edit `web/index.html`:
 
 ```html
 <script>
@@ -161,7 +156,7 @@ The React frontend handles configuration at runtime using `window.__CONFIG__` ra
 </script>
 ```
 
-When run behind Nginx (default), you can inject custom backend routing via environment variables:
+When run behind nginx (default), backend routing is controlled via environment variables:
 `API_UPSTREAM`, `WEB_UPSTREAM`, and `MINIO_UPSTREAM`.
 
 ## PWA Installation
@@ -252,12 +247,8 @@ docker compose up -d --build scout      # scout worker
 make test-api-docker
 
 # Useful make targets
-make up                   # start all services
+make up                   # start all services (respects .env profiles)
 make down                 # stop all services
-make ai-up                # start with ai profile (Scout + LLM)
-make ai-down              # stop ai profile
-make gpu-up               # GPU-accelerated stack
-make gpu-down
 make logs-api             # tail API logs
 make logs-worker          # tail worker logs
 make shell-db             # sqlite3 shell into the database
@@ -270,16 +261,36 @@ make clean                # stop + remove volumes
 
 Scout, clip summaries, and AI-assisted features require an LLM. Two modes:
 
-| Setting | Local (default) | Hosted API |
+| Setting | Local (Ollama) | Hosted API |
 |---------|----------------|------------|
 | `LLM_PROVIDER` | `ollama` | `openai` or `anthropic` |
-| `LLM_BASE_URL` | *(auto: internal LLM service)* | API endpoint URL |
+| `LLM_BASE_URL` | *(auto: internal `llm` service)* | API endpoint URL |
 | `LLM_API_KEY` | *(not needed)* | Your API key |
 | `LLM_MODEL` | *(uses `OLLAMA_MODEL`)* | Model name |
 
-- Set `ENABLE_AI=true` (automatic with GPU compose or `--profile ai`).
+- Set `COMPOSE_PROFILES=ai` (add `ollama` for local inference).
 - Python workers route calls through LiteLLM; any OpenAI-compatible endpoint works.
-- Anthropic: set `LLM_BASE_URL=https://api.anthropic.com/v1`.
+
+**Using Claude (Anthropic) as the hosted LLM:**
+
+Option A — native Anthropic provider:
+```
+LLM_PROVIDER=anthropic
+LLM_BASE_URL=https://api.anthropic.com/v1
+LLM_API_KEY=<your Anthropic API key>
+LLM_MODEL=claude-sonnet-4-6
+ANTHROPIC_VERSION=2023-06-01
+```
+
+Option B — via Anthropic's OpenAI-compatible endpoint:
+```
+LLM_PROVIDER=openai
+LLM_BASE_URL=https://api.anthropic.com/v1/
+LLM_API_KEY=<your Anthropic API key>
+LLM_MODEL=claude-sonnet-4-6
+```
+
+Both options work. Option B uses Anthropic's OpenAI SDK compatibility layer, which accepts standard OpenAI-format requests and translates them to the Claude API. Note that some advanced Claude features (prompt caching, extended thinking output, citations) are only available through the native Anthropic API (Option A).
 
 ## Roadmap
 
@@ -288,4 +299,4 @@ Scout, clip summaries, and AI-assisted features require an LLM. Two modes:
 - [x] Phase 3: Search (FTS5), saved filters, platform cookies, clip summaries, Scout
 - [x] Phase 4: Multi-user (auth, per-user preferences/embeddings/collections)
 
- Possible Features: Sharing, federation, public collections?
+Possible future directions: sharing, federation, public collections.
