@@ -150,8 +150,9 @@ func main() {
 		log.Printf("created bucket: %s", cfg.MinioBucket)
 	}
 
-	// Set public-read policy so thumbnails load without presigned URLs
-	publicPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/*"]}]}`, cfg.MinioBucket)
+	// Set public-read policy scoped to thumbnail prefix only — video streams
+	// remain protected behind presigned URLs.
+	publicPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/clips/*/thumbnail.jpg"]}]}`, cfg.MinioBucket)
 	if err := minioClient.SetBucketPolicy(ctx, cfg.MinioBucket, publicPolicy); err != nil {
 		log.Printf("warning: failed to set public-read policy on bucket: %v", err)
 	}
@@ -162,10 +163,21 @@ func main() {
 	app.ltrModel = app.loadLTRModel()
 	go app.ltrModelRefreshLoop()
 
+	// Rate limiters: auth endpoints get a tight limit, general API is more generous.
+	authRL := newRateLimiter(10, 1*time.Minute)  // 10 attempts per IP per minute
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
+
+	// Global request body size limit (1 MB) to prevent oversized payloads.
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, defaultBodyLimit)
+			next.ServeHTTP(w, r)
+		})
+	})
 
 	// Security headers
 	r.Use(func(next http.Handler) http.Handler {
@@ -200,14 +212,19 @@ func main() {
 
 	r.Get("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		aiEnabled := os.Getenv("ENABLE_AI") == "true"
+		w.Header().Set("Cache-Control", "public, max-age=300")
 		writeJSON(w, 200, map[string]interface{}{
 			"ai_enabled": aiEnabled,
 		})
 	})
 
-	r.Post("/api/auth/register", app.handleRegister)
-	r.Post("/api/auth/login", app.handleLogin)
-	r.Post("/api/admin/login", app.handleAdminLogin)
+	// Auth routes with rate limiting
+	r.Group(func(r chi.Router) {
+		r.Use(rateLimitMiddleware(authRL))
+		r.Post("/api/auth/register", app.handleRegister)
+		r.Post("/api/auth/login", app.handleLogin)
+		r.Post("/api/admin/login", app.handleAdminLogin)
+	})
 	r.Get("/api/feed", app.optionalAuth(app.handleFeed))
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
