@@ -46,6 +46,7 @@ export const ClipCard = React.forwardRef(function ClipCard({
   const [showInfo, setShowInfo] = useState(false);
   const [showCollections, setShowCollections] = useState(false);
   const startTimeRef = useRef(null);
+  const viewFiredRef = useRef(null);
 
   // Fetch stream URL — use cached blob instantly, otherwise stream directly
   useEffect(() => {
@@ -78,7 +79,10 @@ export const ClipCard = React.forwardRef(function ClipCard({
         video.play().then(() => {
           setPlaying(true);
           startTimeRef.current = Date.now();
-          onInteract?.(clip.id, 'view');
+          if (viewFiredRef.current !== clip.id) {
+            viewFiredRef.current = clip.id;
+            onInteract?.(clip.id, 'view');
+          }
         }).catch((e) => {
           console.warn("Autoplay prevented:", e);
           setPlaying(false);

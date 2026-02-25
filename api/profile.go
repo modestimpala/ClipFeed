@@ -69,11 +69,37 @@ func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) handleUpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
+	maxBody(r, defaultBodyLimit)
 
 	var prefs map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&prefs); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
+	}
+
+	// Validate float preference ranges [0, 1]
+	for _, key := range []string{"exploration_rate", "diversity_mix", "freshness_bias"} {
+		if v, ok := prefs[key]; ok && v != nil {
+			var f float64
+			switch vt := v.(type) {
+			case float64:
+				f = vt
+			case json.Number:
+				var err error
+				f, err = vt.Float64()
+				if err != nil {
+					writeJSON(w, 400, map[string]string{"error": key + " must be a number between 0 and 1"})
+					return
+				}
+			default:
+				writeJSON(w, 400, map[string]string{"error": key + " must be a number between 0 and 1"})
+				return
+			}
+			if f < 0 || f > 1 {
+				writeJSON(w, 400, map[string]string{"error": key + " must be between 0 and 1"})
+				return
+			}
+		}
 	}
 
 	topicWeights, _ := json.Marshal(prefs["topic_weights"])

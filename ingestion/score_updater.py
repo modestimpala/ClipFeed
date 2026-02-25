@@ -6,10 +6,12 @@ and maintains user profile embeddings.
 """
 import math
 import os
+import signal
 import struct
 import time
 import sqlite3
 import logging
+import threading
 from collections import defaultdict
 
 import numpy as np
@@ -185,7 +187,16 @@ def main():
     db = open_db()
     log.info(f"Score updater started (interval={INTERVAL}s)")
 
-    while True:
+    shutdown = threading.Event()
+
+    def handle_signal(signum, frame):
+        log.info("Received shutdown signal, finishing current cycle...")
+        shutdown.set()
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
+    while not shutdown.is_set():
         try:
             update_content_scores(db)
         except Exception as e:
@@ -219,7 +230,10 @@ def main():
             except Exception:
                 pass
 
-        time.sleep(INTERVAL)
+        shutdown.wait(INTERVAL)
+
+    db.close()
+    log.info("Score updater shut down cleanly")
 
 
 if __name__ == "__main__":

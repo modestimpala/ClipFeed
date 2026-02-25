@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 )
 
@@ -72,4 +73,16 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+// maxBody wraps r.Body with a size limit to prevent oversized payloads.
+func maxBody(r *http.Request, n int64) {
+	r.Body = http.MaxBytesReader(nil, r.Body, n)
+}
+
+const defaultBodyLimit int64 = 1 << 20 // 1 MB
+
+// limitedBodyReader returns an io.Reader capped at defaultBodyLimit.
+func limitedBodyReader(r *http.Request) io.Reader {
+	return io.LimitReader(r.Body, defaultBodyLimit)
 }

@@ -211,7 +211,7 @@ func main() {
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
 	r.Get("/api/clips/{id}/similar", app.handleSimilarClips)
-	r.Get("/api/clips/{id}/summary", app.handleClipSummary)
+	r.Post("/api/clips/{id}/summary", app.handleClipSummary)
 	r.Get("/api/search", app.handleSearch)
 	r.Get("/api/topics", app.handleGetTopics)
 	r.Get("/api/topics/tree", app.handleGetTopicTree)

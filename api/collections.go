@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -10,12 +11,23 @@ import (
 
 func (a *App) handleCreateCollection(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
+	maxBody(r, defaultBodyLimit)
+
 	var req struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		return
+	}
+	req.Title = strings.TrimSpace(req.Title)
+	if req.Title == "" || len(req.Title) > 200 {
+		writeJSON(w, 400, map[string]string{"error": "title is required and must be under 200 characters"})
+		return
+	}
+	if len(req.Description) > 2000 {
+		writeJSON(w, 400, map[string]string{"error": "description must be under 2000 characters"})
 		return
 	}
 
@@ -41,6 +53,7 @@ func (a *App) handleListCollections(w http.ResponseWriter, r *http.Request) {
 		WHERE c.user_id = ?
 		GROUP BY c.id
 		ORDER BY c.created_at DESC
+		LIMIT 100
 	`, userID)
 
 	if err != nil {
@@ -62,6 +75,9 @@ func (a *App) handleListCollections(w http.ResponseWriter, r *http.Request) {
 			"id": id, "title": title, "description": description,
 			"is_public": isPublic == 1, "clip_count": clipCount, "created_at": createdAt,
 		})
+	}
+	if collections == nil {
+		collections = make([]map[string]interface{}, 0)
 	}
 	writeJSON(w, 200, map[string]interface{}{"collections": collections})
 }
@@ -142,6 +158,7 @@ func (a *App) handleGetCollectionClips(w http.ResponseWriter, r *http.Request) {
 		LEFT JOIN sources s ON c.source_id = s.id
 		WHERE cc.collection_id = ?
 		ORDER BY cc.position ASC, cc.added_at DESC
+		LIMIT 200
 	`, collectionID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to list collection clips"})
