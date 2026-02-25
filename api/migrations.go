@@ -93,19 +93,30 @@ func runMigrations(db *sql.DB, dialect Dialect) error {
 
 		log.Printf("Applying migration: %s", file)
 		
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction for migration %s: %w", file, err)
+		}
+		
 		// Some SQLite statements like PRAGMA cannot run in a transaction,
 		// but standard DDL should be fine. We just execute them.
-		if _, err := db.Exec(string(content)); err != nil {
+		if _, err := tx.Exec(string(content)); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("exec migration %s: %w", file, err)
 		}
 		
 		if dialect == DialectPostgres {
-			_, err = db.Exec("INSERT INTO schema_migrations (version) VALUES ($1)", file)
+			_, err = tx.Exec("INSERT INTO schema_migrations (version) VALUES ($1)", file)
 		} else {
-			_, err = db.Exec("INSERT INTO schema_migrations (version) VALUES (?)", file)
+			_, err = tx.Exec("INSERT INTO schema_migrations (version) VALUES (?)", file)
 		}
 		if err != nil {
+			tx.Rollback()
 			return fmt.Errorf("record migration %s: %w", file, err)
+		}
+		
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", file, err)
 		}
 	}
 	return nil

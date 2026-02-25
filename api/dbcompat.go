@@ -165,7 +165,7 @@ func (d *CompatDB) DatetimeModifier(modifier string) string {
 	if d.IsPostgres() {
 		// Convert SQLite modifier like "-24 hours" → Postgres interval
 		mod := strings.TrimPrefix(modifier, "-")
-		return fmt.Sprintf("to_char(now() AT TIME ZONE 'UTC' - interval '%s', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')", mod)
+		return fmt.Sprintf("now() AT TIME ZONE 'UTC' - interval '%s'", mod)
 	}
 	return fmt.Sprintf("datetime('now', '%s')", modifier)
 }
@@ -175,7 +175,7 @@ func (d *CompatDB) DatetimeModifier(modifier string) string {
 func (d *CompatDB) DatetimeRecencyExpr() string {
 	if d.IsPostgres() {
 		// Parameter is negative days as integer, e.g. -7; multiply by interval to get offset.
-		return "c.created_at > to_char((now() AT TIME ZONE 'UTC' + ? * interval '1 day'), 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
+		return "c.created_at > (now() AT TIME ZONE 'UTC' + ? * interval '1 day')"
 	}
 	return "c.created_at > datetime('now', ? || ' days')"
 }

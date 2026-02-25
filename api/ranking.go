@@ -283,10 +283,11 @@ func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interfa
 		args[i] = id
 	}
 
+	dtExpr := a.db.DatetimeModifier("-6 hours")
 	rows, err := a.db.QueryContext(ctx,
 		`SELECT clip_id, COUNT(*) FROM interactions
 		 WHERE clip_id IN (`+strings.Join(ph, ",")+`)
-		   AND created_at > datetime('now', '-6 hours')
+		   AND created_at > `+dtExpr+`
 		 GROUP BY clip_id`, args...)
 	if err != nil {
 		return
@@ -432,9 +433,10 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 		stats.SaveRate = float64(saveCount) / float64(totalViews)
 	}
 
+	ageExpr := a.db.AgeHoursExpr("MAX(created_at)")
 	var hoursSince sql.NullFloat64
 	if err := a.db.QueryRowContext(ctx, `
-		SELECT (julianday('now') - julianday(MAX(created_at))) * 24.0
+		SELECT `+ageExpr+`
 		FROM interactions
 		WHERE user_id = ?
 	`, userID).Scan(&hoursSince); err != nil {
@@ -604,6 +606,8 @@ func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TODO: For production scale (>10k clips), this brute-force text/visual embedding
+	// cosine similarity check should be replaced with an ANN index (e.g. pgvector or sqlite-vss).
 	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT e.clip_id, e.text_embedding, e.visual_embedding,
 		       c.title, c.thumbnail_key, c.duration_seconds, c.content_score

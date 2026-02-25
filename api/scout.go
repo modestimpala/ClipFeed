@@ -188,14 +188,19 @@ func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete candidates first (FK references scout_sources with no cascade).
-	if _, err := a.db.ExecContext(r.Context(),
-		`DELETE FROM scout_candidates WHERE scout_source_id = ?`, sourceID); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to delete source"})
-		return
-	}
-	if _, err := a.db.ExecContext(r.Context(),
-		`DELETE FROM scout_sources WHERE id = ? AND user_id = ?`, sourceID, userID); err != nil {
+	if err := withTx(r.Context(), a.db, func(conn *CompatConn) error {
+		// Delete candidates first (FK references scout_sources with no cascade).
+		if _, err := conn.ExecContext(r.Context(),
+			`DELETE FROM scout_candidates WHERE scout_source_id = ?`, sourceID); err != nil {
+			return fmt.Errorf("delete candidates: %w", err)
+		}
+		if _, err := conn.ExecContext(r.Context(),
+			`DELETE FROM scout_sources WHERE id = ? AND user_id = ?`, sourceID, userID); err != nil {
+			return fmt.Errorf("delete source: %w", err)
+		}
+		return nil
+	}); err != nil {
+		log.Printf("delete scout source %s: %v", sourceID, err)
 		writeJSON(w, 500, map[string]string{"error": "failed to delete source"})
 		return
 	}

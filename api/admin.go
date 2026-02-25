@@ -240,8 +240,11 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	stats["recent_failures"] = recentFailed
 
-	// Auto-purge: delete failed jobs older than 48 hours (they can be re-ingested naturally)
-	// Also purge rejected jobs (validation failures like duration exceeded)
+	writeJSON(w, 200, stats)
+}
+
+func (a *App) handleClearFailedJobs(w http.ResponseWriter, r *http.Request) {
+	// Auto-purge stale failed/rejected jobs before clearing
 	purged, _ := a.db.Exec(fmt.Sprintf(`
 		DELETE FROM jobs
 		WHERE (status = 'failed' AND attempts >= max_attempts
@@ -252,14 +255,10 @@ func (a *App) handleAdminStatus(w http.ResponseWriter, r *http.Request) {
 		a.db.PurgeDatetimeComparison("COALESCE(completed_at, created_at)", "-24 hours")))
 	if purged != nil {
 		if n, _ := purged.RowsAffected(); n > 0 {
-			log.Printf("admin status: auto-purged %d stale failed jobs", n)
+			log.Printf("admin: auto-purged %d stale failed/rejected jobs", n)
 		}
 	}
 
-	writeJSON(w, 200, stats)
-}
-
-func (a *App) handleClearFailedJobs(w http.ResponseWriter, r *http.Request) {
 	// Reset associated sources back to pending so they can be re-ingested naturally
 	_, err := a.db.Exec(`
 		UPDATE sources SET status = 'pending'
