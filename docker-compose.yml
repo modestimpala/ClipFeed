@@ -39,6 +39,7 @@ services:
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
       JWT_SECRET: ${JWT_SECRET:-supersecretkey}
+      WORKER_SECRET: ${WORKER_SECRET:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}

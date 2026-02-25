@@ -319,6 +319,20 @@ func main() {
 		r.Get("/api/scout/profile", app.handleGetScoutProfile)
 	})
 
+	// Internal worker API (authenticated via WORKER_SECRET)
+	r.Group(func(r chi.Router) {
+		r.Use(app.workerAuthMiddleware)
+		r.Post("/api/internal/jobs/claim", app.handleWorkerClaimJob)
+		r.Put("/api/internal/jobs/{id}", app.handleWorkerUpdateJob)
+		r.Get("/api/internal/jobs/{id}", app.handleWorkerGetJob)
+		r.Post("/api/internal/jobs/reclaim", app.handleWorkerReclaimStale)
+		r.Put("/api/internal/sources/{id}", app.handleWorkerUpdateSource)
+		r.Get("/api/internal/sources/{id}/cookie", app.handleWorkerGetCookie)
+		r.Post("/api/internal/clips", app.handleWorkerCreateClip)
+		r.Post("/api/internal/topics/resolve", app.handleWorkerResolveTopic)
+		r.Post("/api/internal/scores/update", app.handleWorkerScoreUpdate)
+	})
+
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 
 	go func() {
