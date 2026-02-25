@@ -29,7 +29,7 @@ function AdminLogin({ onLogin, onBack }) {
     setLoading(true);
     try {
       const data = await api.adminLogin(username, password);
-      localStorage.setItem('clipfeed_admin_token', data.token);
+      sessionStorage.setItem('clipfeed_admin_token', data.token);
       onLogin();
     } catch (err) {
       setError(err.error || 'Invalid credentials');
@@ -128,7 +128,7 @@ function LLMLogsModal({ onClose }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const adminToken = localStorage.getItem('clipfeed_admin_token');
+    const adminToken = sessionStorage.getItem('clipfeed_admin_token');
 
     api.getAdminLLMLogs(adminToken)
       .then(data => setLogs(data.logs || []))
@@ -240,7 +240,7 @@ function getHealthStatus(stats) {
 
 /* ── main screen ── */
 export function AdminScreen({ onBack }) {
-  const [authed, setAuthed] = useState(!!localStorage.getItem('clipfeed_admin_token'));
+  const [authed, setAuthed] = useState(!!sessionStorage.getItem('clipfeed_admin_token'));
   const [stats, setStats] = useState(null);
   const [error, setError] = useState(null);
   const [showLogs, setShowLogs] = useState(false);
@@ -250,7 +250,7 @@ export function AdminScreen({ onBack }) {
   const timerRef = useRef(null);
 
   function loadStats() {
-    const adminToken = localStorage.getItem('clipfeed_admin_token');
+    const adminToken = sessionStorage.getItem('clipfeed_admin_token');
 
     api.getAdminStatus(adminToken)
       .then((data) => {
@@ -272,7 +272,7 @@ export function AdminScreen({ onBack }) {
   }, [authed]);
 
   function handleLogout() {
-    localStorage.removeItem('clipfeed_admin_token');
+    sessionStorage.removeItem('clipfeed_admin_token');
     setAuthed(false);
     setStats(null);
   }
@@ -280,7 +280,7 @@ export function AdminScreen({ onBack }) {
   async function handleClearFailed() {
     if (clearing) return;
     setClearing(true);
-    const adminToken = localStorage.getItem('clipfeed_admin_token');
+    const adminToken = sessionStorage.getItem('clipfeed_admin_token');
     try {
       await api.clearFailedJobs(adminToken);
       loadStats();

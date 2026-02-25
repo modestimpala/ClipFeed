@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
 import { useInstallPrompt } from '../../../shared/hooks/useInstallPrompt';
@@ -11,6 +11,8 @@ export function SettingsScreen({ onLogout }) {
   const { canInstall, showIOSGuide, installed, promptInstall } = useInstallPrompt();
   const [subscreen, setSubscreen] = useState(null);
   const [aiEnabled, setAiEnabled] = useState(false);
+
+  const debouncedSave = useRef(null);
 
   const [prefs, setPrefs] = useState({
     exploration_rate: 0.3,
@@ -42,7 +44,12 @@ export function SettingsScreen({ onLogout }) {
   function handleChange(key, value) {
     const updated = { ...prefs, [key]: value };
     setPrefs(updated);
-    api.updatePreferences(updated).catch(console.error);
+    // Debounce the API write — sliders fire onChange on every pixel of drag,
+    // so we wait until the user pauses before persisting.
+    clearTimeout(debouncedSave.current);
+    debouncedSave.current = setTimeout(() => {
+      api.updatePreferences(updated).catch(console.error);
+    }, 400);
   }
 
   if (subscreen === 'scout') {
