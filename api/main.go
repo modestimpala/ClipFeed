@@ -46,6 +46,7 @@ type Config struct {
 	MinioBucket    string
 	MinioSSL       bool
 	JWTSecret      string
+	AdminJWTSecret string
 	CookieSecret   string
 	AdminUsername  string
 	AdminPassword  string
@@ -54,7 +55,22 @@ type Config struct {
 	WorkerSecret   string
 }
 
+// defaultSecrets lists the baked-in placeholder values that MUST be changed
+// before running in production.  When any of these remain, the server refuses
+// to start unless ALLOW_INSECURE_DEFAULTS=true (for local development only).
+var defaultSecrets = map[string]string{
+	"JWT_SECRET":      "supersecretkey",
+	"MINIO_SECRET_KEY": "changeme123",
+	"ADMIN_PASSWORD":  "changeme_admin_password",
+}
+
 func loadConfig() Config {
+	adminJWT := getEnv("ADMIN_JWT_SECRET", "")
+	if adminJWT == "" {
+		// Fall back to JWT_SECRET so existing deployments keep working,
+		// but operators should set a separate key.
+		adminJWT = getEnv("JWT_SECRET", "supersecretkey")
+	}
 	return Config{
 		DBDriver:       getEnv("DB_DRIVER", "sqlite"),
 		DBPath:         getEnv("DB_PATH", "/data/clipfeed.db"),
@@ -66,6 +82,7 @@ func loadConfig() Config {
 		MinioBucket:    getEnv("MINIO_BUCKET", "clips"),
 		MinioSSL:       getEnv("MINIO_USE_SSL", "false") == "true",
 		JWTSecret:      getEnv("JWT_SECRET", "supersecretkey"),
+		AdminJWTSecret: adminJWT,
 		CookieSecret:   getEnv("COOKIE_SECRET", getEnv("JWT_SECRET", "supersecretkey")),
 		AdminUsername:  getEnv("ADMIN_USERNAME", "admin"),
 		AdminPassword:  getEnv("ADMIN_PASSWORD", "changeme_admin_password"),
@@ -82,17 +99,29 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
+func isInsecureDefaultsAllowed() bool {
+	v := strings.ToLower(os.Getenv("ALLOW_INSECURE_DEFAULTS"))
+	return v == "true" || v == "1" || v == "yes"
+}
+
 func main() {
 	cfg := loadConfig()
 
-	if cfg.JWTSecret == "supersecretkey" {
-		log.Println("WARNING: JWT_SECRET is set to an insecure default. Set a strong JWT_SECRET in production.")
-	}
-	if cfg.MinioSecret == "changeme123" {
-		log.Println("WARNING: MINIO_SECRET_KEY is set to an insecure default. Set a strong MINIO_SECRET_KEY in production.")
-	}
-	if cfg.AdminPassword == "changeme_admin_password" {
-		log.Println("WARNING: ADMIN_PASSWORD is set to an insecure default. Set a strong ADMIN_PASSWORD in production.")
+	// Refuse to start with known default secrets unless explicitly overridden.
+	if !isInsecureDefaultsAllowed() {
+		var insecure []string
+		for envKey, placeholder := range defaultSecrets {
+			if getEnv(envKey, placeholder) == placeholder {
+				insecure = append(insecure, envKey)
+			}
+		}
+		if len(insecure) > 0 {
+			log.Fatalf("FATAL: the following secrets still use insecure defaults: %v\n"+
+				"Set them in your .env file or pass ALLOW_INSECURE_DEFAULTS=true for local development.",
+				insecure)
+		}
+	} else {
+		log.Println("WARNING: ALLOW_INSECURE_DEFAULTS=true — running with default secrets (development mode)")
 	}
 
 	// Database

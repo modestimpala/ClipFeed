@@ -38,7 +38,7 @@ func (a *App) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		"iat":   time.Now().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, err := token.SignedString([]byte(a.cfg.JWTSecret))
+	tokenStr, err := token.SignedString([]byte(a.cfg.AdminJWTSecret))
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "failed to generate token"})
 		return
@@ -60,7 +60,7 @@ func (a *App) isAdminToken(r *http.Request) bool {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method")
 		}
-		return []byte(a.cfg.JWTSecret), nil
+		return []byte(a.cfg.AdminJWTSecret), nil
 	})
 	if err != nil || !token.Valid {
 		return false

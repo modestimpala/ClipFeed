@@ -44,7 +44,11 @@ services:
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
       JWT_SECRET: ${JWT_SECRET:-supersecretkey}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme_admin_password}
       WORKER_SECRET: ${WORKER_SECRET:-}
+      ALLOW_INSECURE_DEFAULTS: ${ALLOW_INSECURE_DEFAULTS:-false}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
@@ -81,7 +85,7 @@ services:
       retries: 3
     environment:
       DB_PATH: /data/clipfeed.db
-      WORKER_MODE: ${WORKER_MODE:-direct}
+      WORKER_MODE: ${WORKER_MODE:-http}
       WORKER_API_URL: ${WORKER_API_URL:-http://api:8080}
       WORKER_SECRET: ${WORKER_SECRET:-}
       MINIO_ENDPOINT: minio:9000

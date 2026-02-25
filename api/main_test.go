@@ -37,7 +37,7 @@ func newTestApp(t *testing.T) *App {
 	t.Cleanup(func() { db.Close() })
 	return &App{
 		db:  NewCompatDB(db, DialectSQLite),
-		cfg: Config{JWTSecret: "test-secret", CookieSecret: "test-cookie-secret", MinioBucket: "test-bucket"},
+		cfg: Config{JWTSecret: "test-secret", AdminJWTSecret: "test-admin-secret", CookieSecret: "test-cookie-secret", MinioBucket: "test-bucket"},
 	}
 }
 
@@ -2077,9 +2077,9 @@ func TestIsAdminToken_WrongSecret(t *testing.T) {
 	resp := decodeJSON(t, rec)
 	adminToken := resp["token"].(string)
 
-	// Check with a different JWT secret
+	// Check with a different admin JWT secret
 	app2 := newTestApp(t)
-	app2.cfg.JWTSecret = "completely-different-secret"
+	app2.cfg.AdminJWTSecret = "completely-different-secret"
 	checkReq := httptest.NewRequest("GET", "/", nil)
 	checkReq.Header.Set("Authorization", "Bearer "+adminToken)
 	if app2.isAdminToken(checkReq) {

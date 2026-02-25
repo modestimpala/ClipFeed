@@ -11,6 +11,7 @@ RUN apk add --no-cache ca-certificates tzdata sqlite \
     && addgroup -g 1000 -S appgroup && adduser -u 1000 -S appuser -G appgroup
 WORKDIR /app
 COPY --from=builder /app/server .
+RUN mkdir -p /data && chown appuser:appgroup /data
 USER appuser
 EXPOSE 8080
 ENTRYPOINT ["./server"]
