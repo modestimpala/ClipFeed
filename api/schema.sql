@@ -322,3 +322,9 @@ CREATE TABLE IF NOT EXISTS llm_logs (
     created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_llm_logs_created ON llm_logs(created_at DESC);
+
+-- --- Performance indexes ---
+
+CREATE INDEX IF NOT EXISTS idx_interactions_clip_created ON interactions(clip_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_scout_candidates_source ON scout_candidates(scout_source_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source_id);
