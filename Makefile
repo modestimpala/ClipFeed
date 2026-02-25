@@ -1,19 +1,22 @@
-.PHONY: up down build logs shell-api shell-worker shell-db lifecycle score test-api-docker clean \
-       ai-up ai-down gpu-up gpu-down gpu-build gpu-logs gpu-logs-worker gpu-logs-api
+.PHONY: up down build logs logs-worker logs-api \
+       shell-api shell-worker shell-db lifecycle score test-api-docker \
+       dev-api dev-web backup restore clean
 
-GPU_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ai
+# All `docker compose` commands automatically read COMPOSE_PROFILES and
+# COMPOSE_FILE from .env, so there is no need for per-combo targets.
+#
+# Examples for .env:
+#   Base stack (no AI)  → leave COMPOSE_PROFILES empty
+#   AI + cloud LLM      → COMPOSE_PROFILES=ai
+#   AI + local Ollama    → COMPOSE_PROFILES=ai,ollama
+#   GPU + cloud LLM      → COMPOSE_PROFILES=ai  +  COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
+#   GPU + local Ollama   → COMPOSE_PROFILES=ai,ollama  +  COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
 
 up:
 	docker compose up -d
 
 down:
 	docker compose down
-
-ai-up:
-	docker compose --profile ai up -d
-
-ai-down:
-	docker compose --profile ai down
 
 build:
 	docker compose build --no-cache
@@ -26,24 +29,6 @@ logs-worker:
 
 logs-api:
 	docker compose logs -f api
-
-gpu-up:
-	$(GPU_COMPOSE) up -d
-
-gpu-down:
-	$(GPU_COMPOSE) down
-
-gpu-build:
-	$(GPU_COMPOSE) build --no-cache
-
-gpu-logs:
-	$(GPU_COMPOSE) logs -f
-
-gpu-logs-worker:
-	$(GPU_COMPOSE) logs -f worker
-
-gpu-logs-api:
-	$(GPU_COMPOSE) logs -f api
 
 shell-api:
 	docker compose exec api sh

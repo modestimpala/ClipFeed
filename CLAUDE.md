@@ -16,28 +16,28 @@ docker compose up -d --build scout     # scout changes
 # Run API tests inside Docker
 make test-api-docker
 
-# Stack management
-make up               # start all services
+# Stack management — all commands respect COMPOSE_PROFILES / COMPOSE_FILE from .env
+make up               # start services (profiles from .env)
 make down             # stop all services
 make build            # full rebuild, all images (slow — avoid unless needed)
 make logs-api
 make logs-worker
 make shell-db         # sqlite3 shell into /data/clipfeed.db
 
-# GPU stack (worker + LLM get NVIDIA GPU access)
-make gpu-up           # start with GPU override
-make gpu-down
-make gpu-build        # full GPU rebuild (slow — avoid unless needed)
-make gpu-logs
-make gpu-logs-worker
-make gpu-logs-api
-
 # Maintenance
 make lifecycle        # expire old clips (run periodically / cron)
 make score            # trigger score update pass
 ```
 
-GPU-accelerated stack: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d`
+Configure which optional services start via `COMPOSE_PROFILES` in `.env`:
+
+| `.env` setting | What starts |
+|---|---|
+| `COMPOSE_PROFILES=` | Base stack (no AI) |
+| `COMPOSE_PROFILES=ai` | + scout (cloud LLM) |
+| `COMPOSE_PROFILES=ai,ollama` | + scout + local Ollama |
+
+For GPU, add `COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml` to `.env`.
 
 ## Architecture
 

@@ -1,5 +1,5 @@
-# GPU override — layer on top of docker-compose.yml:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml --profile ai up -d --build
+# GPU override — enable by adding to .env:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml
 #
 # Prerequisites:
 #   - NVIDIA GPU with drivers installed on the host
