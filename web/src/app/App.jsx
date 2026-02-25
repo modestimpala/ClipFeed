@@ -93,22 +93,22 @@ export default function App() {
     <>
       <Suspense fallback={null}>
         {visited.has('feed') && (
-          <div style={tab !== 'feed' ? { display: 'none' } : undefined}>
+          <div style={{ display: tab !== 'feed' ? 'none' : 'block', height: '100%' }}>
             <FeedScreen />
           </div>
         )}
         {visited.has('jobs') && (
-          <div style={tab !== 'jobs' ? { display: 'none' } : undefined}>
+          <div style={{ display: tab !== 'jobs' ? 'none' : 'block', height: '100%' }}>
             <JobsScreen />
           </div>
         )}
         {visited.has('saved') && (
-          <div style={tab !== 'saved' ? { display: 'none' } : undefined}>
+          <div style={{ display: tab !== 'saved' ? 'none' : 'block', height: '100%' }}>
             <SavedScreen />
           </div>
         )}
         {visited.has('settings') && (
-          <div style={tab !== 'settings' ? { display: 'none' } : undefined}>
+          <div style={{ display: tab !== 'settings' ? 'none' : 'block', height: '100%' }}>
             <SettingsScreen onLogout={api.getToken() ? handleLogout : null} />
           </div>
         )}

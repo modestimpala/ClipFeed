@@ -2,6 +2,12 @@
 
 Self-hosted short-form video platform with a transparent, user-controllable algorithm.
 
+<p align="center">
+  <img src="./media/img/screenshot1.JPG" width="25%" />
+  <img src="./media/img/screenshot2.JPG" width="25%" />
+  <img src="./media/img/screenshot3.JPG" width="25%" />
+</p>
+
 ## Architecture
 
 ```
