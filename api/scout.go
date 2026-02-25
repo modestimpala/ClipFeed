@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -358,46 +359,25 @@ func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
 	jobID := uuid.New().String()
 	payload := fmt.Sprintf(`{"url":%q,"source_id":%q,"platform":%q}`, urlStr, sourceID, platform)
 
-	conn, err := a.db.Conn(r.Context())
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "db error"})
-		return
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(r.Context(), "BEGIN IMMEDIATE"); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "db error"})
-		return
-	}
-
-	if _, err := conn.ExecContext(r.Context(),
-		`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
-		sourceID, urlStr, platform, userID); err != nil {
-		if _, rbErr := conn.ExecContext(r.Context(), "ROLLBACK"); rbErr != nil {
-			log.Printf("rollback failed after source insert error: %v", rbErr)
+	if err := withTx(r.Context(), a.db, func(conn *sql.Conn) error {
+		if _, err := conn.ExecContext(r.Context(),
+			`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
+			sourceID, urlStr, platform, userID); err != nil {
+			return fmt.Errorf("create source: %w", err)
 		}
-		writeJSON(w, 500, map[string]string{"error": "failed to create source"})
-		return
-	}
-	if _, err := conn.ExecContext(r.Context(),
-		`INSERT INTO jobs (id, source_id, job_type, payload) VALUES (?, ?, 'download', ?)`,
-		jobID, sourceID, payload); err != nil {
-		if _, rbErr := conn.ExecContext(r.Context(), "ROLLBACK"); rbErr != nil {
-			log.Printf("rollback failed after job insert error: %v", rbErr)
+		if _, err := conn.ExecContext(r.Context(),
+			`INSERT INTO jobs (id, source_id, job_type, payload) VALUES (?, ?, 'download', ?)`,
+			jobID, sourceID, payload); err != nil {
+			return fmt.Errorf("queue job: %w", err)
 		}
-		writeJSON(w, 500, map[string]string{"error": "failed to queue job"})
-		return
-	}
-	if _, err := conn.ExecContext(r.Context(),
-		`UPDATE scout_candidates SET status = 'ingested' WHERE id = ?`, candidateID); err != nil {
-		if _, rbErr := conn.ExecContext(r.Context(), "ROLLBACK"); rbErr != nil {
-			log.Printf("rollback failed after candidate update error: %v", rbErr)
+		if _, err := conn.ExecContext(r.Context(),
+			`UPDATE scout_candidates SET status = 'ingested' WHERE id = ?`, candidateID); err != nil {
+			return fmt.Errorf("update candidate: %w", err)
 		}
-		writeJSON(w, 500, map[string]string{"error": "failed to update candidate"})
-		return
-	}
-	if _, err := conn.ExecContext(r.Context(), "COMMIT"); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to commit"})
+		return nil
+	}); err != nil {
+		log.Printf("approve candidate tx failed: %v", err)
+		writeJSON(w, 500, map[string]string{"error": "failed to approve candidate"})
 		return
 	}
 
