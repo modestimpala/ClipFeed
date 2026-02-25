@@ -10,6 +10,8 @@ import json
 import logging
 import time
 
+import threading
+
 import requests
 
 log = logging.getLogger("worker.api_client")
@@ -25,24 +27,32 @@ class WorkerAPIClient:
 
     def __init__(self, api_url: str, worker_secret: str, timeout: int = 30):
         self.api_url = api_url.rstrip("/")
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {worker_secret}",
-            "Content-Type": "application/json",
-        })
+        self._worker_secret = worker_secret
         self.timeout = timeout
+        self._local = threading.local()
+
+    def _session(self) -> requests.Session:
+        """Return a per-thread Session, creating and configuring it on first use."""
+        if not hasattr(self._local, "session"):
+            s = requests.Session()
+            s.headers.update({
+                "Authorization": f"Bearer {self._worker_secret}",
+                "Content-Type": "application/json",
+            })
+            self._local.session = s
+        return self._local.session
 
     def _url(self, path: str) -> str:
         return f"{self.api_url}/api/internal{path}"
 
     def _get(self, path: str, **kwargs) -> requests.Response:
-        return self.session.get(self._url(path), timeout=self.timeout, **kwargs)
+        return self._session().get(self._url(path), timeout=self.timeout, **kwargs)
 
     def _post(self, path: str, data=None, **kwargs) -> requests.Response:
-        return self.session.post(self._url(path), json=data, timeout=self.timeout, **kwargs)
+        return self._session().post(self._url(path), json=data, timeout=self.timeout, **kwargs)
 
     def _put(self, path: str, data=None, **kwargs) -> requests.Response:
-        return self.session.put(self._url(path), json=data, timeout=self.timeout, **kwargs)
+        return self._session().put(self._url(path), json=data, timeout=self.timeout, **kwargs)
 
     # --- Job operations ---
 
@@ -173,7 +183,7 @@ class WorkerAPIClient:
     def health_check(self) -> bool:
         """Check if the API is reachable."""
         try:
-            resp = self.session.get(
+            resp = self._session().get(
                 f"{self.api_url}/health", timeout=5
             )
             return resp.status_code == 200
