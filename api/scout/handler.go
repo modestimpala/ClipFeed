@@ -1,4 +1,4 @@
-package main
+package scout
 
 import (
 	"encoding/json"
@@ -7,12 +7,22 @@ import (
 	"net/http"
 	"strings"
 
+	"clipfeed/auth"
+	"clipfeed/db"
+	"clipfeed/httputil"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
-func (a *App) handleCreateScoutSource(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// Handler holds dependencies for scout (content-discovery) endpoints.
+type Handler struct {
+	DB *db.CompatDB
+}
+
+// HandleCreateScoutSource creates a new scout monitoring source.
+func (h *Handler) HandleCreateScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	var req struct {
 		SourceType string `json:"source_type"`
 		Platform   string `json:"platform"`
@@ -20,11 +30,11 @@ func (a *App) handleCreateScoutSource(w http.ResponseWriter, r *http.Request) {
 		Interval   int    `json:"check_interval_hours"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 	if req.SourceType == "" || req.Platform == "" || req.Identifier == "" {
-		writeJSON(w, 400, map[string]string{"error": "source_type, platform, identifier required"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "source_type, platform, identifier required"})
 		return
 	}
 	interval := req.Interval
@@ -33,24 +43,25 @@ func (a *App) handleCreateScoutSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := uuid.New().String()
-	_, err := a.db.ExecContext(r.Context(),
+	_, err := h.DB.ExecContext(r.Context(),
 		`INSERT INTO scout_sources (id, user_id, source_type, platform, identifier, check_interval_hours)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		id, userID, req.SourceType, req.Platform, req.Identifier, interval)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			writeJSON(w, 409, map[string]string{"error": "source already exists"})
+			httputil.WriteJSON(w, 409, map[string]string{"error": "source already exists"})
 			return
 		}
-		writeJSON(w, 500, map[string]string{"error": "failed to create scout source"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to create scout source"})
 		return
 	}
-	writeJSON(w, 201, map[string]interface{}{"id": id})
+	httputil.WriteJSON(w, 201, map[string]interface{}{"id": id})
 }
 
-func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
-	rows, err := a.db.QueryContext(r.Context(), `
+// HandleListScoutSources lists all scout sources with candidate counts.
+func (h *Handler) HandleListScoutSources(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
+	rows, err := h.DB.QueryContext(r.Context(), `
 		SELECT s.id, s.source_type, s.platform, s.identifier, s.is_active,
 		       s.last_checked, s.check_interval_hours, s.force_check, s.created_at,
 		       COALESCE(SUM(CASE WHEN c.status = 'pending'  THEN 1 ELSE 0 END), 0) AS cnt_pending,
@@ -63,7 +74,7 @@ func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
 		GROUP BY s.id
 		ORDER BY s.created_at DESC`, userID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "query failed"})
 		return
 	}
 	defer rows.Close()
@@ -93,17 +104,18 @@ func (a *App) handleListScoutSources(w http.ResponseWriter, r *http.Request) {
 	if sources == nil {
 		sources = make([]map[string]interface{}, 0)
 	}
-	writeJSON(w, 200, map[string]interface{}{"sources": sources})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"sources": sources})
 }
 
-func (a *App) handleListScoutCandidates(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleListScoutCandidates lists scout candidates filtered by status.
+func (h *Handler) HandleListScoutCandidates(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	statusFilter := r.URL.Query().Get("status")
 	if statusFilter == "" {
 		statusFilter = "pending"
 	}
 
-	rows, err := a.db.QueryContext(r.Context(), `
+	rows, err := h.DB.QueryContext(r.Context(), `
 		SELECT sc.id, sc.url, sc.platform, sc.external_id, sc.title,
 		       sc.channel_name, sc.duration_seconds, sc.llm_score, sc.status, sc.created_at
 		FROM scout_candidates sc
@@ -112,7 +124,7 @@ func (a *App) handleListScoutCandidates(w http.ResponseWriter, r *http.Request) 
 		ORDER BY sc.created_at DESC LIMIT 50
 	`, userID, statusFilter)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "query failed"})
 		return
 	}
 	defer rows.Close()
@@ -135,11 +147,12 @@ func (a *App) handleListScoutCandidates(w http.ResponseWriter, r *http.Request) 
 	if candidates == nil {
 		candidates = make([]map[string]interface{}, 0)
 	}
-	writeJSON(w, 200, map[string]interface{}{"candidates": candidates})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"candidates": candidates})
 }
 
-func (a *App) handleUpdateScoutSource(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleUpdateScoutSource updates is_active or check_interval_hours.
+func (h *Handler) HandleUpdateScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	sourceID := chi.URLParam(r, "id")
 
 	var req struct {
@@ -147,7 +160,7 @@ func (a *App) handleUpdateScoutSource(w http.ResponseWriter, r *http.Request) {
 		Interval *int  `json:"check_interval_hours"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 
@@ -156,40 +169,38 @@ func (a *App) handleUpdateScoutSource(w http.ResponseWriter, r *http.Request) {
 		if *req.IsActive {
 			active = 1
 		}
-		if _, err := a.db.ExecContext(r.Context(),
+		if _, err := h.DB.ExecContext(r.Context(),
 			`UPDATE scout_sources SET is_active = ? WHERE id = ? AND user_id = ?`,
 			active, sourceID, userID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to update source"})
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update source"})
 			return
 		}
 	}
 	if req.Interval != nil && *req.Interval > 0 {
-		if _, err := a.db.ExecContext(r.Context(),
+		if _, err := h.DB.ExecContext(r.Context(),
 			`UPDATE scout_sources SET check_interval_hours = ? WHERE id = ? AND user_id = ?`,
 			*req.Interval, sourceID, userID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to update source"})
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update source"})
 			return
 		}
 	}
-
-	writeJSON(w, 200, map[string]string{"status": "updated"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "updated"})
 }
 
-func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleDeleteScoutSource removes a source and its candidates.
+func (h *Handler) HandleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	sourceID := chi.URLParam(r, "id")
 
-	// Verify ownership before touching anything.
 	var count int
-	if err := a.db.QueryRowContext(r.Context(),
+	if err := h.DB.QueryRowContext(r.Context(),
 		`SELECT COUNT(*) FROM scout_sources WHERE id = ? AND user_id = ?`,
 		sourceID, userID).Scan(&count); err != nil || count == 0 {
-		writeJSON(w, 404, map[string]string{"error": "source not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "source not found"})
 		return
 	}
 
-	if err := withTx(r.Context(), a.db, func(conn *CompatConn) error {
-		// Delete candidates first (FK references scout_sources with no cascade).
+	if err := db.WithTx(r.Context(), h.DB, func(conn *db.CompatConn) error {
 		if _, err := conn.ExecContext(r.Context(),
 			`DELETE FROM scout_candidates WHERE scout_source_id = ?`, sourceID); err != nil {
 			return fmt.Errorf("delete candidates: %w", err)
@@ -201,20 +212,17 @@ func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}); err != nil {
 		log.Printf("delete scout source %s: %v", sourceID, err)
-		writeJSON(w, 500, map[string]string{"error": "failed to delete source"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to delete source"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
-// handleGetScoutProfile returns the user's interest profile that Scout uses for
-// personalized content discovery. This includes top topics (from interactions +
-// explicit weights), favorite channels, and interaction stats.
-func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleGetScoutProfile returns the user's interest profile for scout.
+func (h *Handler) HandleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 
-	// 1. Top topics from interactions (liked/saved clips)
-	topicRows, err := a.db.QueryContext(r.Context(), `
+	topicRows, err := h.DB.QueryContext(r.Context(), `
 		SELECT t.name, COUNT(*) AS cnt,
 		       COALESCE(uta.weight, 1.0) AS user_weight
 		FROM interactions i
@@ -229,7 +237,7 @@ func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
 		LIMIT 15
 	`, userID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "query failed"})
 		return
 	}
 	defer topicRows.Close()
@@ -250,20 +258,17 @@ func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
 		topics = make([]map[string]interface{}, 0)
 	}
 
-	// 2. Explicit topic weights from user preferences
 	var topicWeightsJSON string
-	a.db.QueryRowContext(r.Context(),
+	h.DB.QueryRowContext(r.Context(),
 		`SELECT COALESCE(topic_weights, '{}') FROM user_preferences WHERE user_id = ?`,
 		userID).Scan(&topicWeightsJSON)
-
 	var explicitWeights map[string]interface{}
 	json.Unmarshal([]byte(topicWeightsJSON), &explicitWeights)
 	if explicitWeights == nil {
 		explicitWeights = make(map[string]interface{})
 	}
 
-	// 3. Favorite channels (most interacted)
-	channelRows, err := a.db.QueryContext(r.Context(), `
+	channelRows, err := h.DB.QueryContext(r.Context(), `
 		SELECT s.channel_name, COUNT(*) AS cnt
 		FROM interactions i
 		JOIN clips c ON i.clip_id = c.id
@@ -276,7 +281,7 @@ func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
 		LIMIT 10
 	`, userID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "query failed"})
 		return
 	}
 	defer channelRows.Close()
@@ -296,9 +301,8 @@ func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
 		channels = make([]map[string]interface{}, 0)
 	}
 
-	// 4. Interaction summary
 	var totalLikes, totalSaves, totalViews int
-	a.db.QueryRowContext(r.Context(), `
+	h.DB.QueryRowContext(r.Context(), `
 		SELECT
 			COALESCE(SUM(CASE WHEN action = 'like' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN action = 'save' THEN 1 ELSE 0 END), 0),
@@ -306,56 +310,55 @@ func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
 		FROM interactions WHERE user_id = ?
 	`, userID).Scan(&totalLikes, &totalSaves, &totalViews)
 
-	// 5. User preferences relevant to scout
 	var scoutThreshold float64
 	var scoutAutoIngest int
-	a.db.QueryRowContext(r.Context(),
+	h.DB.QueryRowContext(r.Context(),
 		`SELECT COALESCE(scout_threshold, 6.0), COALESCE(scout_auto_ingest, 1) FROM user_preferences WHERE user_id = ?`,
 		userID).Scan(&scoutThreshold, &scoutAutoIngest)
 
-	writeJSON(w, 200, map[string]interface{}{
-		"topics":           topics,
-		"explicit_weights": explicitWeights,
-		"channels":         channels,
-		"stats": map[string]int{
-			"likes": totalLikes, "saves": totalSaves, "views": totalViews,
-		},
-		"scout_threshold":    scoutThreshold,
-		"scout_auto_ingest":  scoutAutoIngest == 1,
+	httputil.WriteJSON(w, 200, map[string]interface{}{
+		"topics":            topics,
+		"explicit_weights":  explicitWeights,
+		"channels":          channels,
+		"stats":             map[string]int{"likes": totalLikes, "saves": totalSaves, "views": totalViews},
+		"scout_threshold":   scoutThreshold,
+		"scout_auto_ingest": scoutAutoIngest == 1,
 	})
 }
 
-func (a *App) handleTriggerScoutSource(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleTriggerScoutSource forces a re-check of a scout source.
+func (h *Handler) HandleTriggerScoutSource(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	sourceID := chi.URLParam(r, "id")
 
-	res, err := a.db.ExecContext(r.Context(),
+	res, err := h.DB.ExecContext(r.Context(),
 		`UPDATE scout_sources SET force_check = 1, last_checked = NULL
 		 WHERE id = ? AND user_id = ?`, sourceID, userID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "trigger failed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "trigger failed"})
 		return
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		writeJSON(w, 404, map[string]string{"error": "source not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "source not found"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "triggered"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "triggered"})
 }
 
-func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleApproveCandidate approves a scout candidate and queues ingestion.
+func (h *Handler) HandleApproveCandidate(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	candidateID := chi.URLParam(r, "id")
 
 	var urlStr, platform string
-	err := a.db.QueryRowContext(r.Context(), `
+	err := h.DB.QueryRowContext(r.Context(), `
 		SELECT sc.url, sc.platform FROM scout_candidates sc
 		JOIN scout_sources ss ON sc.scout_source_id = ss.id
 		WHERE sc.id = ? AND ss.user_id = ? AND sc.status = 'pending'
 	`, candidateID, userID).Scan(&urlStr, &platform)
 	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "candidate not found or already processed"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "candidate not found or already processed"})
 		return
 	}
 
@@ -363,7 +366,7 @@ func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
 	jobID := uuid.New().String()
 	payload := fmt.Sprintf(`{"url":%q,"source_id":%q,"platform":%q}`, urlStr, sourceID, platform)
 
-	if err := withTx(r.Context(), a.db, func(conn *CompatConn) error {
+	if err := db.WithTx(r.Context(), h.DB, func(conn *db.CompatConn) error {
 		if _, err := conn.ExecContext(r.Context(),
 			`INSERT INTO sources (id, url, platform, submitted_by, status) VALUES (?, ?, ?, ?, 'pending')`,
 			sourceID, urlStr, platform, userID); err != nil {
@@ -381,11 +384,11 @@ func (a *App) handleApproveCandidate(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}); err != nil {
 		log.Printf("approve candidate tx failed: %v", err)
-		writeJSON(w, 500, map[string]string{"error": "failed to approve candidate"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to approve candidate"})
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	httputil.WriteJSON(w, 200, map[string]interface{}{
 		"status": "approved", "source_id": sourceID, "job_id": jobID,
 	})
 }

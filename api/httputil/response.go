@@ -1,4 +1,4 @@
-package main
+package httputil
 
 import (
 	"database/sql"
@@ -8,7 +8,11 @@ import (
 	"net/http"
 )
 
-func scanClips(rows *sql.Rows) []map[string]interface{} {
+// DefaultBodyLimit is the default maximum request body size (1 MB).
+const DefaultBodyLimit int64 = 1 << 20
+
+// ScanClips scans rows into a slice of clip maps with standard fields.
+func ScanClips(rows *sql.Rows) []map[string]interface{} {
 	clips := make([]map[string]interface{}, 0)
 	for rows.Next() {
 		var id, title, createdAt, sourceID string
@@ -42,10 +46,10 @@ func scanClips(rows *sql.Rows) []map[string]interface{} {
 			"topics": topics, "tags": tags, "content_score": score,
 			"created_at": createdAt, "channel_name": channelName,
 			"platform": platform, "source_url": sourceURL,
-			"_source_id": sourceID,
-			"_transcript_length": transcriptLength,
-			"_file_size_bytes": fileSizeBytes,
-			"_age_hours": ageHours,
+			"_source_id":          sourceID,
+			"_transcript_length":  transcriptLength,
+			"_file_size_bytes":    fileSizeBytes,
+			"_age_hours":          ageHours,
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -54,39 +58,38 @@ func scanClips(rows *sql.Rows) []map[string]interface{} {
 	return clips
 }
 
-// thumbnailURL builds the browser-facing URL for a MinIO object.
+// ThumbnailURL builds the browser-facing URL for a MinIO object.
 // path = "/storage/{bucket}/{key}" which nginx rewrites to /{bucket}/{key}
 // and MinIO resolves as bucket + object-key.
-func thumbnailURL(bucket, key string) string {
+func ThumbnailURL(bucket, key string) string {
 	if key == "" {
 		return ""
 	}
 	return "/storage/" + bucket + "/" + key
 }
 
-// addThumbnailURLs enriches clip maps with a thumbnail_url field.
-func addThumbnailURLs(clips []map[string]interface{}, bucket string) {
+// AddThumbnailURLs enriches clip maps with a thumbnail_url field.
+func AddThumbnailURLs(clips []map[string]interface{}, bucket string) {
 	for _, clip := range clips {
 		if key, ok := clip["thumbnail_key"].(string); ok && key != "" {
-			clip["thumbnail_url"] = thumbnailURL(bucket, key)
+			clip["thumbnail_url"] = ThumbnailURL(bucket, key)
 		}
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
+// WriteJSON sends a JSON response with the given status code.
+func WriteJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }
 
-// maxBody wraps r.Body with a size limit to prevent oversized payloads.
-func maxBody(r *http.Request, n int64) {
+// MaxBody wraps r.Body with a size limit to prevent oversized payloads.
+func MaxBody(r *http.Request, n int64) {
 	r.Body = http.MaxBytesReader(nil, r.Body, n)
 }
 
-const defaultBodyLimit int64 = 1 << 20 // 1 MB
-
-// limitedBodyReader returns an io.Reader capped at defaultBodyLimit.
-func limitedBodyReader(r *http.Request) io.Reader {
-	return io.LimitReader(r.Body, defaultBodyLimit)
+// LimitedBodyReader returns an io.Reader capped at DefaultBodyLimit.
+func LimitedBodyReader(r *http.Request) io.Reader {
+	return io.LimitReader(r.Body, DefaultBodyLimit)
 }

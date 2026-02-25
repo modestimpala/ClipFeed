@@ -1,15 +1,17 @@
-package main
+package ratelimit
 
 import (
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"clipfeed/httputil"
 )
 
-// rateLimiter implements a per-IP token bucket rate limiter.
+// RateLimiter implements a per-IP token bucket rate limiter.
 // No external dependencies — suitable for a single-instance deployment.
-type rateLimiter struct {
+type RateLimiter struct {
 	mu       sync.Mutex
 	visitors map[string]*bucket
 	rate     int           // tokens per window
@@ -21,8 +23,9 @@ type bucket struct {
 	lastReset time.Time
 }
 
-func newRateLimiter(rate int, window time.Duration) *rateLimiter {
-	rl := &rateLimiter{
+// New creates a new RateLimiter with the given rate and window.
+func New(rate int, window time.Duration) *RateLimiter {
+	rl := &RateLimiter{
 		visitors: make(map[string]*bucket),
 		rate:     rate,
 		window:   window,
@@ -37,7 +40,7 @@ func newRateLimiter(rate int, window time.Duration) *rateLimiter {
 	return rl
 }
 
-func (rl *rateLimiter) cleanup() {
+func (rl *RateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	cutoff := time.Now().Add(-2 * rl.window)
@@ -48,7 +51,8 @@ func (rl *rateLimiter) cleanup() {
 	}
 }
 
-func (rl *rateLimiter) allow(ip string) bool {
+// Allow returns true if the given IP is within the rate limit.
+func (rl *RateLimiter) Allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
@@ -65,11 +69,11 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
-// clientIP extracts the real client IP for rate limiting.
+// ClientIP extracts the real client IP for rate limiting.
 // Trusts X-Real-IP (set by our nginx proxy) first, then takes only the
 // first (leftmost) entry from X-Forwarded-For to prevent spoofing via
 // appended headers. Falls back to RemoteAddr.
-func clientIP(r *http.Request) string {
+func ClientIP(r *http.Request) string {
 	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
 		return strings.TrimSpace(realIP)
 	}
@@ -83,14 +87,14 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// rateLimitMiddleware returns HTTP 429 when the per-IP rate is exceeded.
-func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
+// Middleware returns HTTP 429 when the per-IP rate is exceeded.
+func Middleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := clientIP(r)
-			if !rl.allow(ip) {
+			ip := ClientIP(r)
+			if !rl.Allow(ip) {
 				w.Header().Set("Retry-After", "60")
-				writeJSON(w, 429, map[string]string{"error": "too many requests"})
+				httputil.WriteJSON(w, 429, map[string]string{"error": "too many requests"})
 				return
 			}
 			next.ServeHTTP(w, r)

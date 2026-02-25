@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"context"
@@ -24,8 +24,8 @@ type CompatDB struct {
 	Dialect Dialect
 }
 
-func NewCompatDB(db *sql.DB, dialect Dialect) *CompatDB {
-	return &CompatDB{DB: db, Dialect: dialect}
+func NewCompatDB(rawDB *sql.DB, dialect Dialect) *CompatDB {
+	return &CompatDB{DB: rawDB, Dialect: dialect}
 }
 
 func (d *CompatDB) Close() error                         { return d.DB.Close() }
@@ -205,9 +205,7 @@ func (d *CompatDB) DateOfExpr(col string) string {
 	return fmt.Sprintf("date(%s)", col)
 }
 
-// PurgeDatetimeExpr returns the SQL fragment used in admin auto-purge.
-// For SQLite: datetime(COALESCE(col, created_at)) <= datetime('now', modifier)
-// For Postgres: equivalent cast+comparison.
+// PurgeDatetimeComparison returns the SQL fragment used in admin auto-purge.
 func (d *CompatDB) PurgeDatetimeComparison(coalesced string, modifier string) string {
 	if d.IsPostgres() {
 		mod := strings.TrimPrefix(modifier, "-")

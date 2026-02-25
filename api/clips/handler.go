@@ -1,4 +1,4 @@
-package main
+package clips
 
 import (
 	"encoding/json"
@@ -7,14 +7,28 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
+	"clipfeed/auth"
+	"clipfeed/db"
+	"clipfeed/httputil"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
 )
 
-func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
+// Handler holds dependencies for clip-related endpoints.
+type Handler struct {
+	DB          *db.CompatDB
+	Minio       *minio.Client
+	MinioBucket string
+}
+
+// HandleGetClip returns a single clip's metadata.
+func (h *Handler) HandleGetClip(w http.ResponseWriter, r *http.Request) {
 	clipID := chi.URLParam(r, "id")
 
 	var id, title, description, thumbnailKey, topicsJSON, tagsJSON, status, createdAt string
@@ -22,7 +36,7 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 	var width, height, fileSize *int64
 	var channelName, platform, sourceURL *string
 
-	err := a.db.QueryRowContext(r.Context(), `
+	err := h.DB.QueryRowContext(r.Context(), `
 		SELECT c.id, c.title, c.description, c.duration_seconds,
 		       c.thumbnail_key, c.topics, c.tags, c.content_score,
 		       c.status, c.created_at, c.width, c.height, c.file_size_bytes,
@@ -36,7 +50,7 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 		&channelName, &platform, &sourceURL)
 
 	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "clip not found"})
 		return
 	}
 
@@ -44,10 +58,10 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal([]byte(topicsJSON), &topics)
 	json.Unmarshal([]byte(tagsJSON), &tags)
 
-	writeJSON(w, 200, map[string]interface{}{
+	httputil.WriteJSON(w, 200, map[string]interface{}{
 		"id": id, "title": title, "description": description,
 		"duration_seconds": duration, "thumbnail_key": thumbnailKey,
-		"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbnailKey),
+		"thumbnail_url": httputil.ThumbnailURL(h.MinioBucket, thumbnailKey),
 		"topics": topics, "tags": tags, "content_score": score,
 		"status": status, "created_at": createdAt,
 		"width": width, "height": height, "file_size_bytes": fileSize,
@@ -56,36 +70,39 @@ func (a *App) handleGetClip(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *App) handleStreamClip(w http.ResponseWriter, r *http.Request) {
+// HandleStreamClip returns a presigned stream URL for a ready clip.
+func (h *Handler) HandleStreamClip(w http.ResponseWriter, r *http.Request) {
 	clipID := chi.URLParam(r, "id")
 
 	var storageKey string
-	err := a.db.QueryRowContext(r.Context(),
+	err := h.DB.QueryRowContext(r.Context(),
 		`SELECT storage_key FROM clips WHERE id = ? AND status = 'ready'`,
 		clipID).Scan(&storageKey)
 
 	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "clip not found"})
 		return
 	}
 
-	presignedURL, err := a.minio.PresignedGetObject(r.Context(),
-		a.cfg.MinioBucket, storageKey, 2*time.Hour, nil)
+	presignedURL, err := h.Minio.PresignedGetObject(r.Context(),
+		h.MinioBucket, storageKey, 2*time.Hour, nil)
 
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to generate stream URL"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to generate stream URL"})
 		return
 	}
-	streamURL, err := buildBrowserStreamURL(presignedURL.String())
+	streamURL, err := BuildBrowserStreamURL(presignedURL.String())
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to build stream URL"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to build stream URL"})
 		return
 	}
 
-	writeJSON(w, 200, map[string]string{"url": streamURL})
+	httputil.WriteJSON(w, 200, map[string]string{"url": streamURL})
 }
 
-func buildBrowserStreamURL(presigned string) (string, error) {
+// BuildBrowserStreamURL converts a presigned MinIO URL into a browser-facing
+// path through the nginx reverse proxy.
+func BuildBrowserStreamURL(presigned string) (string, error) {
 	u, err := url.Parse(presigned)
 	if err != nil || u.Path == "" {
 		return "", fmt.Errorf("invalid presigned URL")
@@ -100,19 +117,21 @@ func buildBrowserStreamURL(presigned string) (string, error) {
 
 // --- Interactions ---
 
+// InteractionRequest is the JSON body for POST /api/clips/{id}/interact.
 type InteractionRequest struct {
 	Action          string  `json:"action"`
 	WatchDuration   float64 `json:"watch_duration_seconds"`
 	WatchPercentage float64 `json:"watch_percentage"`
 }
 
-func (a *App) handleInteraction(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleInteraction records a user interaction with a clip.
+func (h *Handler) HandleInteraction(w http.ResponseWriter, r *http.Request) {
+	userID, _ := auth.ExtractUserID(r)
 	clipID := chi.URLParam(r, "id")
 
 	var req InteractionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 
@@ -121,57 +140,57 @@ func (a *App) handleInteraction(w http.ResponseWriter, r *http.Request) {
 		"save": true, "share": true, "skip": true, "watch_full": true,
 	}
 	if !validActions[req.Action] {
-		writeJSON(w, 400, map[string]string{"error": "invalid action"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid action"})
 		return
 	}
 
-	// Verify clip exists before inserting interaction
 	var exists int
-	if err := a.db.QueryRowContext(r.Context(), `SELECT 1 FROM clips WHERE id = ?`, clipID).Scan(&exists); err != nil {
-		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+	if err := h.DB.QueryRowContext(r.Context(), `SELECT 1 FROM clips WHERE id = ?`, clipID).Scan(&exists); err != nil {
+		httputil.WriteJSON(w, 404, map[string]string{"error": "clip not found"})
 		return
 	}
 
 	interactionID := uuid.New().String()
-	_, err := a.db.ExecContext(r.Context(), `
+	_, err := h.DB.ExecContext(r.Context(), `
 		INSERT INTO interactions (id, user_id, clip_id, action, watch_duration_seconds, watch_percentage)
 		VALUES (?, ?, ?, ?, ?, ?)
 	`, interactionID, userID, clipID, req.Action, req.WatchDuration, req.WatchPercentage)
 
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to record interaction"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to record interaction"})
 		return
 	}
 
-	writeJSON(w, 200, map[string]string{"status": "recorded"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "recorded"})
 }
 
 // --- Clip Summary (LLM) ---
 
-func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
+// HandleClipSummary generates or retrieves a cached LLM summary for a clip.
+func (h *Handler) HandleClipSummary(w http.ResponseWriter, r *http.Request) {
 	clipID := chi.URLParam(r, "id")
 
 	var summary, model string
-	err := a.db.QueryRowContext(r.Context(),
+	err := h.DB.QueryRowContext(r.Context(),
 		`SELECT summary, model FROM clip_summaries WHERE clip_id = ?`, clipID,
 	).Scan(&summary, &model)
 	if err == nil {
 		log.Printf("[LLM] Summary cache hit for clip %s (model=%s)", clipID, model)
-		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summary, "model": model, "cached": true})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summary, "model": model, "cached": true})
 		return
 	}
 
 	var transcript string
-	err = a.db.QueryRowContext(r.Context(),
+	err = h.DB.QueryRowContext(r.Context(),
 		`SELECT COALESCE(transcript, '') FROM clips WHERE id = ?`, clipID,
 	).Scan(&transcript)
 	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "clip not found"})
 		return
 	}
 	if transcript == "" {
 		log.Printf("[LLM] No transcript for clip %s — skipping summary", clipID)
-		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "model": "", "cached": false})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "model": "", "cached": false})
 		return
 	}
 
@@ -182,26 +201,26 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[LLM] Generating summary for clip %s (transcript_len=%d)", clipID, len(transcript))
 	start := time.Now()
-	summaryText, modelName, err := generateSummaryWithLLM(prompt)
+	summaryText, modelName, err := GenerateSummaryWithLLM(prompt)
 	durationMs := time.Since(start).Milliseconds()
-	
+
 	if err != nil {
 		log.Printf("[LLM] Summary generation FAILED for clip %s: %v", clipID, err)
-		a.db.ExecContext(r.Context(),
+		h.DB.ExecContext(r.Context(),
 			`INSERT INTO llm_logs (system, model, prompt, error, duration_ms) VALUES (?, ?, ?, ?, ?)`,
 			"summary", modelName, prompt, err.Error(), durationMs)
-		writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": "", "error": "LLM unavailable"})
 		return
 	}
 
 	log.Printf("[LLM] Summary generated for clip %s: model=%s summary_len=%d", clipID, modelName, len(summaryText))
 
-	a.db.ExecContext(r.Context(),
+	h.DB.ExecContext(r.Context(),
 		`INSERT INTO llm_logs (system, model, prompt, response, duration_ms) VALUES (?, ?, ?, ?, ?)`,
 		"summary", modelName, prompt, summaryText, durationMs)
 
 	if summaryText != "" {
-		if _, err := a.db.ExecContext(r.Context(),
+		if _, err := h.DB.ExecContext(r.Context(),
 			`INSERT INTO clip_summaries (clip_id, summary, model) VALUES (?, ?, ?)
 			 ON CONFLICT(clip_id) DO UPDATE SET summary = EXCLUDED.summary, model = EXCLUDED.model`,
 			clipID, summaryText, modelName); err != nil {
@@ -209,10 +228,11 @@ func (a *App) handleClipSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summaryText, "cached": false})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"clip_id": clipID, "summary": summaryText, "cached": false})
 }
 
-func generateSummaryWithLLM(prompt string) (string, string, error) {
+// GenerateSummaryWithLLM calls the configured LLM provider to generate text.
+func GenerateSummaryWithLLM(prompt string) (string, string, error) {
 	provider := strings.ToLower(strings.TrimSpace(getEnv("LLM_PROVIDER", "ollama")))
 	model := strings.TrimSpace(getEnv("LLM_MODEL", ""))
 	if model == "" {
@@ -236,7 +256,7 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 	client := &http.Client{Timeout: 60 * time.Second}
 	if provider == "" || provider == "ollama" {
 		reqBody, _ := json.Marshal(map[string]interface{}{
-			"model": model,
+			"model":  model,
 			"prompt": prompt,
 			"stream": false,
 		})
@@ -285,9 +305,9 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 		}
 
 		reqBody, _ := json.Marshal(map[string]interface{}{
-			"model": model,
-			"messages": []map[string]string{{"role": "user", "content": prompt}},
-			"max_tokens": 180,
+			"model":       model,
+			"messages":    []map[string]string{{"role": "user", "content": prompt}},
+			"max_tokens":  180,
 			"temperature": 0.2,
 		})
 
@@ -343,9 +363,9 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 
 	// OpenAI-compatible provider
 	reqBody, _ := json.Marshal(map[string]interface{}{
-		"model": model,
-		"messages": []map[string]string{{"role": "user", "content": prompt}},
-		"max_tokens": 180,
+		"model":       model,
+		"messages":    []map[string]string{{"role": "user", "content": prompt}},
+		"max_tokens":  180,
 		"temperature": 0.2,
 	})
 
@@ -412,4 +432,11 @@ func generateSummaryWithLLM(prompt string) (string, string, error) {
 	}
 
 	return strings.Join(parts, " "), model, nil
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

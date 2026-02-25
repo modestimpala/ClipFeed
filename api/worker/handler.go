@@ -1,4 +1,4 @@
-package main
+package worker
 
 import (
 	"context"
@@ -10,90 +10,77 @@ import (
 	"net/http"
 	"strings"
 
+	"clipfeed/crypto"
+	"clipfeed/db"
+	"clipfeed/httputil"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
-// workerAuthMiddleware validates requests from the ingestion worker using a
-// shared secret (WORKER_SECRET). This keeps internal endpoints private.
-func (a *App) workerAuthMiddleware(next http.Handler) http.Handler {
+// Handler holds dependencies for the internal worker API.
+type Handler struct {
+	DB           *db.CompatDB
+	WorkerSecret string
+	CookieSecret string
+}
+
+// WorkerAuthMiddleware validates requests from the ingestion worker.
+func (h *Handler) WorkerAuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.cfg.WorkerSecret == "" {
-			writeJSON(w, 503, map[string]string{"error": "worker API not configured (WORKER_SECRET not set)"})
+		if h.WorkerSecret == "" {
+			httputil.WriteJSON(w, 503, map[string]string{"error": "worker API not configured (WORKER_SECRET not set)"})
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if token == auth || subtle.ConstantTimeCompare([]byte(token), []byte(a.cfg.WorkerSecret)) != 1 {
-			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+		authHeader := r.Header.Get("Authorization")
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if token == authHeader || subtle.ConstantTimeCompare([]byte(token), []byte(h.WorkerSecret)) != 1 {
+			httputil.WriteJSON(w, 401, map[string]string{"error": "unauthorized"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// --- Job claim ---
-
-// POST /api/internal/jobs/claim
-// Atomically claims the next queued job for the worker.
-func (a *App) handleWorkerClaimJob(w http.ResponseWriter, r *http.Request) {
-	nowExpr := a.db.NowUTC()
+// HandleClaimJob atomically claims the next queued job.
+func (h *Handler) HandleClaimJob(w http.ResponseWriter, r *http.Request) {
+	nowExpr := h.DB.NowUTC()
 
 	var id, payload string
 	var err error
 
-	if a.db.IsPostgres() {
-		err = a.db.QueryRowContext(r.Context(), fmt.Sprintf(`
-			UPDATE jobs
-			SET status = 'running',
-			    started_at = %s,
-			    attempts = attempts + 1
+	if h.DB.IsPostgres() {
+		err = h.DB.QueryRowContext(r.Context(), fmt.Sprintf(`
+			UPDATE jobs SET status = 'running', started_at = %s, attempts = attempts + 1
 			WHERE id = (
-				SELECT id FROM jobs
-				WHERE status = 'queued'
-				  AND (run_after IS NULL OR run_after <= %s)
-				ORDER BY priority DESC, created_at ASC
-				LIMIT 1
-				FOR UPDATE SKIP LOCKED
-			)
-			RETURNING id, payload
+				SELECT id FROM jobs WHERE status = 'queued' AND (run_after IS NULL OR run_after <= %s)
+				ORDER BY priority DESC, created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
+			) RETURNING id, payload
 		`, nowExpr, nowExpr)).Scan(&id, &payload)
 	} else {
-		err = a.db.QueryRowContext(r.Context(), fmt.Sprintf(`
-			UPDATE jobs
-			SET status = 'running',
-			    started_at = %s,
-			    attempts = attempts + 1
+		err = h.DB.QueryRowContext(r.Context(), fmt.Sprintf(`
+			UPDATE jobs SET status = 'running', started_at = %s, attempts = attempts + 1
 			WHERE id = (
-				SELECT id FROM jobs
-				WHERE status = 'queued'
-				  AND (run_after IS NULL OR run_after <= %s)
-				ORDER BY priority DESC, created_at ASC
-				LIMIT 1
-			)
-			RETURNING id, payload
+				SELECT id FROM jobs WHERE status = 'queued' AND (run_after IS NULL OR run_after <= %s)
+				ORDER BY priority DESC, created_at ASC LIMIT 1
+			) RETURNING id, payload
 		`, nowExpr, nowExpr)).Scan(&id, &payload)
 	}
 
 	if err != nil {
-		// No job available
-		writeJSON(w, 204, nil)
+		httputil.WriteJSON(w, 204, nil)
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
-		"id":      id,
-		"payload": json.RawMessage(payload),
+	httputil.WriteJSON(w, 200, map[string]interface{}{
+		"id": id, "payload": json.RawMessage(payload),
 	})
 }
 
-// --- Job update ---
-
-// PUT /api/internal/jobs/{id}
-// Updates a job's status, error, and result.
-func (a *App) handleWorkerUpdateJob(w http.ResponseWriter, r *http.Request) {
+// HandleUpdateJob updates a job's status, error, and result.
+func (h *Handler) HandleUpdateJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
-	nowExpr := a.db.NowUTC()
+	nowExpr := h.DB.NowUTC()
 
 	var req struct {
 		Status   string           `json:"status"`
@@ -102,7 +89,7 @@ func (a *App) handleWorkerUpdateJob(w http.ResponseWriter, r *http.Request) {
 		RunAfter *string          `json:"run_after,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 
@@ -116,16 +103,15 @@ func (a *App) handleWorkerUpdateJob(w http.ResponseWriter, r *http.Request) {
 		if req.Error != nil {
 			errStr = *req.Error
 		}
-		_, err := a.db.ExecContext(r.Context(), fmt.Sprintf(`
+		_, err := h.DB.ExecContext(r.Context(), fmt.Sprintf(`
 			UPDATE jobs SET status = ?, error = ?, result = ?, completed_at = %s WHERE id = ?
 		`, nowExpr), req.Status, errStr, resultStr, jobID)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to update job"})
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update job"})
 			return
 		}
 
 	case "queued":
-		// Re-queue with optional run_after (for retry backoff)
 		runAfter := ""
 		if req.RunAfter != nil {
 			runAfter = *req.RunAfter
@@ -134,45 +120,41 @@ func (a *App) handleWorkerUpdateJob(w http.ResponseWriter, r *http.Request) {
 		if req.Error != nil {
 			errStr = *req.Error
 		}
-		_, err := a.db.ExecContext(r.Context(),
+		_, err := h.DB.ExecContext(r.Context(),
 			`UPDATE jobs SET status = 'queued', error = ?, run_after = ? WHERE id = ?`,
 			errStr, runAfter, jobID)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to re-queue job"})
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to re-queue job"})
 			return
 		}
 
 	default:
-		writeJSON(w, 400, map[string]string{"error": "invalid status"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid status"})
 		return
 	}
 
-	writeJSON(w, 200, map[string]string{"status": "updated"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "updated"})
 }
 
-// --- Job info (attempts) ---
-
-// GET /api/internal/jobs/{id}
-func (a *App) handleWorkerGetJob(w http.ResponseWriter, r *http.Request) {
+// HandleGetJob returns a job's status and attempt info.
+func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
 	var attempts, maxAttempts int
 	var status string
-	err := a.db.QueryRowContext(r.Context(),
+	err := h.DB.QueryRowContext(r.Context(),
 		`SELECT status, attempts, max_attempts FROM jobs WHERE id = ?`, jobID,
 	).Scan(&status, &attempts, &maxAttempts)
 	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "job not found"})
+		httputil.WriteJSON(w, 404, map[string]string{"error": "job not found"})
 		return
 	}
-	writeJSON(w, 200, map[string]interface{}{
+	httputil.WriteJSON(w, 200, map[string]interface{}{
 		"id": jobID, "status": status, "attempts": attempts, "max_attempts": maxAttempts,
 	})
 }
 
-// --- Stale job reclamation ---
-
-// POST /api/internal/jobs/reclaim
-func (a *App) handleWorkerReclaimStale(w http.ResponseWriter, r *http.Request) {
+// HandleReclaimStale re-queues or fails stale running jobs.
+func (h *Handler) HandleReclaimStale(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		StaleMinutes int `json:"stale_minutes"`
 	}
@@ -180,36 +162,28 @@ func (a *App) handleWorkerReclaimStale(w http.ResponseWriter, r *http.Request) {
 		req.StaleMinutes = 120
 	}
 
-	nowExpr := a.db.NowUTC()
+	nowExpr := h.DB.NowUTC()
 	staleMsg := fmt.Sprintf("stale watchdog: recovered running job older than %dm", req.StaleMinutes)
 
 	var requeuedCount, failedCount int
 
-	if a.db.IsPostgres() {
+	if h.DB.IsPostgres() {
 		cutoffExpr := fmt.Sprintf("now() - interval '%d minutes'", req.StaleMinutes)
-		// Re-queue retryable
-		res, _ := a.db.ExecContext(r.Context(), fmt.Sprintf(`
-			UPDATE jobs
-			SET status = 'queued', run_after = %s,
+		res, _ := h.DB.ExecContext(r.Context(), fmt.Sprintf(`
+			UPDATE jobs SET status = 'queued', run_after = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN $1 ELSE error || ' | ' || $1 END
-			WHERE status = 'running'
-			  AND started_at IS NOT NULL
-			  AND started_at::timestamptz <= %s
-			  AND attempts < max_attempts
+			WHERE status = 'running' AND started_at IS NOT NULL
+			  AND started_at::timestamptz <= %s AND attempts < max_attempts
 		`, nowExpr, cutoffExpr), staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
 			requeuedCount = int(n)
 		}
-		// Fail exhausted
-		res, _ = a.db.ExecContext(r.Context(), fmt.Sprintf(`
-			UPDATE jobs
-			SET status = 'failed', completed_at = %s,
+		res, _ = h.DB.ExecContext(r.Context(), fmt.Sprintf(`
+			UPDATE jobs SET status = 'failed', completed_at = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN $1 ELSE error || ' | ' || $1 END
-			WHERE status = 'running'
-			  AND started_at IS NOT NULL
-			  AND started_at::timestamptz <= %s
-			  AND attempts >= max_attempts
+			WHERE status = 'running' AND started_at IS NOT NULL
+			  AND started_at::timestamptz <= %s AND attempts >= max_attempts
 		`, nowExpr, cutoffExpr), staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
@@ -217,28 +191,22 @@ func (a *App) handleWorkerReclaimStale(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		cutoff := fmt.Sprintf("-%d minutes", req.StaleMinutes)
-		staleExpr := a.db.PurgeDatetimeComparison("started_at", cutoff)
-		res, _ := a.db.ExecContext(r.Context(), fmt.Sprintf(`
-			UPDATE jobs
-			SET status = 'queued', run_after = %s,
+		staleExpr := h.DB.PurgeDatetimeComparison("started_at", cutoff)
+		res, _ := h.DB.ExecContext(r.Context(), fmt.Sprintf(`
+			UPDATE jobs SET status = 'queued', run_after = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN ? ELSE error || ' | ' || ? END
-			WHERE status = 'running'
-			  AND started_at IS NOT NULL
-			  AND %s
-			  AND attempts < max_attempts
+			WHERE status = 'running' AND started_at IS NOT NULL
+			  AND %s AND attempts < max_attempts
 		`, nowExpr, staleExpr), staleMsg, staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
 			requeuedCount = int(n)
 		}
-		res, _ = a.db.ExecContext(r.Context(), fmt.Sprintf(`
-			UPDATE jobs
-			SET status = 'failed', completed_at = %s,
+		res, _ = h.DB.ExecContext(r.Context(), fmt.Sprintf(`
+			UPDATE jobs SET status = 'failed', completed_at = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN ? ELSE error || ' | ' || ? END
-			WHERE status = 'running'
-			  AND started_at IS NOT NULL
-			  AND %s
-			  AND attempts >= max_attempts
+			WHERE status = 'running' AND started_at IS NOT NULL
+			  AND %s AND attempts >= max_attempts
 		`, nowExpr, staleExpr), staleMsg, staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
@@ -246,32 +214,29 @@ func (a *App) handleWorkerReclaimStale(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	httputil.WriteJSON(w, 200, map[string]interface{}{
 		"requeued": requeuedCount, "failed": failedCount,
 	})
 }
 
-// --- Source update ---
-
-// PUT /api/internal/sources/{id}
-func (a *App) handleWorkerUpdateSource(w http.ResponseWriter, r *http.Request) {
+// HandleUpdateSource updates source metadata from the worker.
+func (h *Handler) HandleUpdateSource(w http.ResponseWriter, r *http.Request) {
 	sourceID := chi.URLParam(r, "id")
 
 	var req struct {
-		Status          *string `json:"status,omitempty"`
-		ExternalID      *string `json:"external_id,omitempty"`
-		Title           *string `json:"title,omitempty"`
-		ChannelName     *string `json:"channel_name,omitempty"`
-		ThumbnailURL    *string `json:"thumbnail_url,omitempty"`
+		Status          *string  `json:"status,omitempty"`
+		ExternalID      *string  `json:"external_id,omitempty"`
+		Title           *string  `json:"title,omitempty"`
+		ChannelName     *string  `json:"channel_name,omitempty"`
+		ThumbnailURL    *string  `json:"thumbnail_url,omitempty"`
 		DurationSeconds *float64 `json:"duration_seconds,omitempty"`
-		Metadata        *string `json:"metadata,omitempty"`
+		Metadata        *string  `json:"metadata,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	// Build SET clause dynamically
 	var sets []string
 	var args []interface{}
 	addSet := func(col string, val interface{}) {
@@ -302,58 +267,53 @@ func (a *App) handleWorkerUpdateSource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(sets) == 0 {
-		writeJSON(w, 400, map[string]string{"error": "no fields to update"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "no fields to update"})
 		return
 	}
 
 	args = append(args, sourceID)
 	query := "UPDATE sources SET " + strings.Join(sets, ", ") + " WHERE id = ?"
-	if _, err := a.db.ExecContext(r.Context(), query, args...); err != nil {
+	if _, err := h.DB.ExecContext(r.Context(), query, args...); err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "UNIQUE constraint") || strings.Contains(errMsg, "duplicate key") {
-			writeJSON(w, 409, map[string]string{"error": "duplicate source: a source with the same platform and external_id already exists"})
+			httputil.WriteJSON(w, 409, map[string]string{"error": "duplicate source: a source with the same platform and external_id already exists"})
 			return
 		}
 		log.Printf("worker update source %s failed: %v", sourceID, err)
-		writeJSON(w, 500, map[string]string{"error": "failed to update source"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update source"})
 		return
 	}
 
-	writeJSON(w, 200, map[string]string{"status": "updated"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "updated"})
 }
 
-// --- Platform cookie ---
-
-// GET /api/internal/sources/{id}/cookie?platform=youtube
-func (a *App) handleWorkerGetCookie(w http.ResponseWriter, r *http.Request) {
+// HandleGetCookie returns a decrypted platform cookie for a source.
+func (h *Handler) HandleGetCookie(w http.ResponseWriter, r *http.Request) {
 	sourceID := chi.URLParam(r, "id")
 	platform := r.URL.Query().Get("platform")
 
 	var encrypted string
-	err := a.db.QueryRowContext(r.Context(), `
+	err := h.DB.QueryRowContext(r.Context(), `
 		SELECT pc.cookie_str FROM platform_cookies pc
 		JOIN sources s ON pc.user_id = s.submitted_by
 		WHERE s.id = ? AND pc.platform = ? AND pc.is_active = 1
 	`, sourceID, platform).Scan(&encrypted)
 	if err != nil {
-		writeJSON(w, 200, map[string]interface{}{"cookie": nil})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"cookie": nil})
 		return
 	}
 
-	decrypted, err := decryptCookie(encrypted, a.cfg.CookieSecret)
+	decrypted, err := crypto.DecryptCookie(encrypted, h.CookieSecret)
 	if err != nil {
-		writeJSON(w, 200, map[string]interface{}{"cookie": nil})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"cookie": nil})
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{"cookie": decrypted})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"cookie": decrypted})
 }
 
-// --- Clip creation ---
-
-// POST /api/internal/clips
-// Creates a clip with associated topics, embeddings, and FTS in one transaction.
-func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
+// HandleCreateClip creates a clip with associated topics, embeddings, and FTS.
+func (h *Handler) HandleCreateClip(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID              string   `json:"id"`
 		SourceID        string   `json:"source_id"`
@@ -372,22 +332,19 @@ func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt       string   `json:"expires_at"`
 		Platform        string   `json:"platform"`
 		ChannelName     string   `json:"channel_name"`
-		// Embeddings as base64-encoded raw bytes
-		TextEmbedding   string `json:"text_embedding,omitempty"`
-		VisualEmbedding string `json:"visual_embedding,omitempty"`
-		ModelVersion    string `json:"model_version,omitempty"`
+		TextEmbedding   string   `json:"text_embedding,omitempty"`
+		VisualEmbedding string   `json:"visual_embedding,omitempty"`
+		ModelVersion    string   `json:"model_version,omitempty"`
 	}
-	// Allow larger body for clip creation (transcript + embeddings)
-	r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10 MB
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	if err := withTx(r.Context(), a.db, func(conn *CompatConn) error {
+	if err := db.WithTx(r.Context(), h.DB, func(conn *db.CompatConn) error {
 		topicsJSON, _ := json.Marshal(req.Topics)
 
-		// Insert clip
 		if _, err := conn.ExecContext(r.Context(), `
 			INSERT INTO clips (
 				id, source_id, title, duration_seconds, start_time, end_time,
@@ -401,9 +358,8 @@ func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("insert clip: %w", err)
 		}
 
-		// Link topics
 		for _, topicName := range req.Topics {
-			topicID := a.resolveOrCreateTopicTx(r.Context(), conn, topicName)
+			topicID := ResolveOrCreateTopicTx(r.Context(), conn, topicName)
 			if topicID != "" {
 				if _, err := conn.ExecContext(r.Context(),
 					`INSERT INTO clip_topics (clip_id, topic_id, confidence, source) VALUES (?, ?, 1.0, 'keybert') ON CONFLICT DO NOTHING`,
@@ -413,14 +369,12 @@ func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Index FTS
 		if _, err := conn.ExecContext(r.Context(),
 			`INSERT INTO clips_fts(clip_id, title, transcript, platform, channel_name) VALUES (?, ?, ?, ?, ?)`,
-			req.ID, req.Title, truncate(req.Transcript, 2000), req.Platform, req.ChannelName); err != nil {
+			req.ID, req.Title, Truncate(req.Transcript, 2000), req.Platform, req.ChannelName); err != nil {
 			return fmt.Errorf("insert clips_fts: %w", err)
 		}
 
-		// Embeddings
 		if req.TextEmbedding != "" || req.VisualEmbedding != "" {
 			var textEmb, visEmb []byte
 			if req.TextEmbedding != "" {
@@ -440,16 +394,16 @@ func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}); err != nil {
 		log.Printf("worker create clip failed: %v", err)
-		writeJSON(w, 500, map[string]string{"error": "failed to create clip"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to create clip"})
 		return
 	}
 
-	writeJSON(w, 201, map[string]interface{}{"id": req.ID})
+	httputil.WriteJSON(w, 201, map[string]interface{}{"id": req.ID})
 }
 
-// resolveOrCreateTopicTx finds or creates a topic within a transaction.
-func (a *App) resolveOrCreateTopicTx(ctx context.Context, conn *CompatConn, name string) string {
-	slug := slugify(name)
+// ResolveOrCreateTopicTx finds or creates a topic within a transaction.
+func ResolveOrCreateTopicTx(ctx context.Context, conn *db.CompatConn, name string) string {
+	slug := Slugify(name)
 	var id string
 	err := conn.QueryRowContext(ctx,
 		"SELECT id FROM topics WHERE slug = ? OR LOWER(name) = LOWER(?)", slug, name,
@@ -462,77 +416,45 @@ func (a *App) resolveOrCreateTopicTx(ctx context.Context, conn *CompatConn, name
 	conn.ExecContext(ctx,
 		"INSERT INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0) ON CONFLICT DO NOTHING",
 		id, name, slug, slug)
-
-	// Re-read in case another process created it concurrently
 	conn.QueryRowContext(ctx, "SELECT id FROM topics WHERE slug = ?", slug).Scan(&id)
 	return id
 }
 
-func slugify(name string) string {
-	s := strings.ToLower(strings.TrimSpace(name))
-	s = strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == ' ' || r == '-' {
-			return r
-		}
-		return -1
-	}, s)
-	parts := strings.Fields(s)
-	return strings.Join(parts, "-")
-}
-
-func truncate(s string, maxLen int) string {
-	runes := []rune(s)
-	if len(runes) <= maxLen {
-		return s
-	}
-	return string(runes[:maxLen])
-}
-
-// --- Topic resolution ---
-
-// POST /api/internal/topics/resolve
-func (a *App) handleWorkerResolveTopic(w http.ResponseWriter, r *http.Request) {
+// HandleResolveTopic resolves or creates a topic by name.
+func (h *Handler) HandleResolveTopic(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-		writeJSON(w, 400, map[string]string{"error": "name required"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "name required"})
 		return
 	}
 
-	slug := slugify(req.Name)
+	slug := Slugify(req.Name)
 	var id string
-	err := a.db.QueryRowContext(r.Context(),
+	err := h.DB.QueryRowContext(r.Context(),
 		"SELECT id FROM topics WHERE slug = ? OR LOWER(name) = LOWER(?)", slug, req.Name,
 	).Scan(&id)
 	if err == nil {
-		writeJSON(w, 200, map[string]interface{}{"id": id, "created": false})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"id": id, "created": false})
 		return
 	}
 
 	id = uuid.New().String()
-	a.db.ExecContext(r.Context(),
+	h.DB.ExecContext(r.Context(),
 		"INSERT INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0) ON CONFLICT DO NOTHING",
 		id, req.Name, slug, slug)
-	// Re-read
-	a.db.QueryRowContext(r.Context(), "SELECT id FROM topics WHERE slug = ?", slug).Scan(&id)
+	h.DB.QueryRowContext(r.Context(), "SELECT id FROM topics WHERE slug = ?", slug).Scan(&id)
 
-	writeJSON(w, 201, map[string]interface{}{"id": id, "created": true})
+	httputil.WriteJSON(w, 201, map[string]interface{}{"id": id, "created": true})
 }
 
-// --- Score update (for score-updater HTTP mode) ---
-
-// POST /api/internal/scores/update
-func (a *App) handleWorkerScoreUpdate(w http.ResponseWriter, r *http.Request) {
-	nowExpr := a.db.NowUTC()
-	_ = nowExpr
-
-	// Update content scores from interaction signals
+// HandleScoreUpdate recalculates content scores from interaction signals.
+func (h *Handler) HandleScoreUpdate(w http.ResponseWriter, r *http.Request) {
 	var count int64
-	if a.db.IsPostgres() {
-		res, err := a.db.ExecContext(r.Context(), `
-			UPDATE clips
-			SET content_score = sub.new_score
+	if h.DB.IsPostgres() {
+		res, err := h.DB.ExecContext(r.Context(), `
+			UPDATE clips SET content_score = sub.new_score
 			FROM (
 				SELECT clip_id,
 					MAX(0.0, LEAST(1.0,
@@ -543,8 +465,7 @@ func (a *App) handleWorkerScoreUpdate(w http.ResponseWriter, r *http.Request) {
 						- COALESCE(CAST(SUM(CASE WHEN action='skip' THEN 1.0 ELSE 0 END) AS REAL) / NULLIF(SUM(CASE WHEN action='view' THEN 1 ELSE 0 END), 0), 0) * 0.30
 						- COALESCE(CAST(SUM(CASE WHEN action='dislike' THEN 1.0 ELSE 0 END) AS REAL) / NULLIF(SUM(CASE WHEN action='view' THEN 1 ELSE 0 END), 0), 0) * 0.15
 					)) AS new_score
-				FROM interactions
-				GROUP BY clip_id
+				FROM interactions GROUP BY clip_id
 				HAVING SUM(CASE WHEN action='view' THEN 1 ELSE 0 END) >= 5
 			) sub
 			WHERE clips.id = sub.clip_id AND clips.status = 'ready'
@@ -553,9 +474,8 @@ func (a *App) handleWorkerScoreUpdate(w http.ResponseWriter, r *http.Request) {
 			count, _ = res.RowsAffected()
 		}
 	} else {
-		res, err := a.db.ExecContext(r.Context(), `
-			UPDATE clips
-			SET content_score = (
+		res, err := h.DB.ExecContext(r.Context(), `
+			UPDATE clips SET content_score = (
 				SELECT MAX(0.0, MIN(1.0,
 					COALESCE(AVG(CASE WHEN action='view' THEN watch_percentage END), 0.5) * 0.35
 					+ COALESCE(CAST(SUM(CASE WHEN action='like' THEN 1.0 ELSE 0 END) AS REAL) / NULLIF(SUM(CASE WHEN action='view' THEN 1 ELSE 0 END), 0), 0) * 0.25
@@ -575,5 +495,27 @@ func (a *App) handleWorkerScoreUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, map[string]interface{}{"updated": count})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"updated": count})
+}
+
+// Slugify converts a topic name to a URL-safe slug.
+func Slugify(name string) string {
+	s := strings.ToLower(strings.TrimSpace(name))
+	s = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == ' ' || r == '-' {
+			return r
+		}
+		return -1
+	}, s)
+	parts := strings.Fields(s)
+	return strings.Join(parts, "-")
+}
+
+// Truncate shortens a string to maxLen runes.
+func Truncate(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen])
 }

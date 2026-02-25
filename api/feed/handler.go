@@ -1,4 +1,4 @@
-package main
+package feed
 
 import (
 	"database/sql"
@@ -7,12 +7,32 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
+
+	"clipfeed/auth"
+	"clipfeed/db"
+	"clipfeed/httputil"
 )
 
-func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
-	userID, _ := r.Context().Value(userIDKey).(string)
+// Handler holds dependencies for all feed-related endpoints.
+type Handler struct {
+	DB          *db.CompatDB
+	MinioBucket string
+
+	tgMu       sync.RWMutex
+	topicGraph *TopicGraph
+
+	ltrMu    sync.RWMutex
+	ltrModel *LTRModel
+
+	LTRModelPath string
+}
+
+// HandleFeed serves the personalised clip feed.
+func (h *Handler) HandleFeed(w http.ResponseWriter, r *http.Request) {
+	userID, _ := auth.ExtractUserID(r)
 	limit := 20
-	fetchLimit := limit * 3 // Over-fetch candidates; post-ranking trims to limit
+	fetchLimit := limit * 3
 	dedupeSeen24h := true
 	var topicWeights map[string]float64
 	feedPrefs := FeedPrefs{
@@ -26,7 +46,7 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 		var dedupeSeen24hRaw int
 		var diversityMix, freshnessBias float64
 		var trendingBoost int
-		if err := a.db.QueryRowContext(r.Context(),
+		if err := h.DB.QueryRowContext(r.Context(),
 			`SELECT COALESCE(topic_weights, '{}'), COALESCE(dedupe_seen_24h, 1),
 			        COALESCE(diversity_mix, 0.5), COALESCE(trending_boost, 1), COALESCE(freshness_bias, 0.5)
 			 FROM user_preferences WHERE user_id = ?`,
@@ -45,20 +65,20 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	// Check for saved filter
 	if filterID := r.URL.Query().Get("filter"); filterID != "" && userID != "" {
 		var queryStr string
-		err := a.db.QueryRowContext(r.Context(),
+		err := h.DB.QueryRowContext(r.Context(),
 			`SELECT query FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID,
 		).Scan(&queryStr)
 		if err == nil {
 			var fq FilterQuery
 			if json.Unmarshal([]byte(queryStr), &fq) == nil {
-				clips, err := a.applyFilterToFeed(r.Context(), &fq, userID, dedupeSeen24h)
+				clips, err := h.ApplyFilterToFeed(r.Context(), &fq, userID, dedupeSeen24h)
 				if err == nil {
-					a.rankFeed(r.Context(), clips, userID, topicWeights, feedPrefs)
+					h.RankFeed(r.Context(), clips, userID, topicWeights, feedPrefs)
 					if len(clips) > limit {
 						clips = clips[:limit]
 					}
-					addThumbnailURLs(clips, a.cfg.MinioBucket)
-					writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips), "filter_id": filterID})
+					httputil.AddThumbnailURLs(clips, h.MinioBucket)
+					httputil.WriteJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips), "filter_id": filterID})
 					return
 				}
 			}
@@ -69,13 +89,12 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if userID != "" {
-		// freshness_bias → decay half-life: 0=672h (old ok), 0.5=168h (default), 1=24h (fresh only)
 		halfLife := 24.0 + (1.0-feedPrefs.FreshnessBias)*648.0
-		ageHours := a.db.AgeHoursExpr("c.created_at")
-		randFloat := a.db.RandomFloat()
-		seenCutoff := a.db.DatetimeModifier("-24 hours")
+		ageHours := h.DB.AgeHoursExpr("c.created_at")
+		randFloat := h.DB.RandomFloat()
+		seenCutoff := h.DB.DatetimeModifier("-24 hours")
 
-		rows, err = a.db.QueryContext(r.Context(), fmt.Sprintf(`
+		rows, err = h.DB.QueryContext(r.Context(), fmt.Sprintf(`
 			WITH prefs AS (
 				SELECT exploration_rate, min_clip_seconds, max_clip_seconds, dedupe_seen_24h
 				FROM user_preferences WHERE user_id = ?
@@ -104,10 +123,10 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 			LIMIT ?
 		`, seenCutoff, ageHours, ageHours, randFloat), userID, userID, halfLife, fetchLimit)
 	} else {
-		ageHours := a.db.AgeHoursExpr("c.created_at")
-		randFloat := a.db.RandomFloat()
+		ageHours := h.DB.AgeHoursExpr("c.created_at")
+		randFloat := h.DB.RandomFloat()
 
-		rows, err = a.db.QueryContext(r.Context(), fmt.Sprintf(`
+		rows, err = h.DB.QueryContext(r.Context(), fmt.Sprintf(`
 			SELECT c.id, c.title, c.description, c.duration_seconds,
 			       c.thumbnail_key, c.topics, c.tags, c.content_score,
 			       c.created_at, s.channel_name, s.platform, s.url,
@@ -125,32 +144,33 @@ func (a *App) handleFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to fetch feed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to fetch feed"})
 		return
 	}
 	defer rows.Close()
 
-	clips := scanClips(rows)
-	a.rankFeed(r.Context(), clips, userID, topicWeights, feedPrefs)
+	clips := httputil.ScanClips(rows)
+	h.RankFeed(r.Context(), clips, userID, topicWeights, feedPrefs)
 	if len(clips) > limit {
 		clips = clips[:limit]
 	}
-	addThumbnailURLs(clips, a.cfg.MinioBucket)
-	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
+	httputil.AddThumbnailURLs(clips, h.MinioBucket)
+	httputil.WriteJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
 }
 
-func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
+// HandleSearch handles full-text search across clips.
+func (h *Handler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
-		writeJSON(w, 400, map[string]string{"error": "q required"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "q required"})
 		return
 	}
 
 	var rows *sql.Rows
 	var err error
 
-	if a.db.IsPostgres() {
-		rows, err = a.db.QueryContext(r.Context(), `
+	if h.DB.IsPostgres() {
+		rows, err = h.DB.QueryContext(r.Context(), `
 			SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
 			       c.topics, c.content_score, s.platform, s.channel_name, s.url
 			FROM clips_fts
@@ -161,10 +181,8 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 			LIMIT 20
 		`, q, q)
 	} else {
-		// Sanitize FTS5 query: escape double quotes and wrap in double quotes
-		// to prevent query syntax injection (AND, OR, NOT, NEAR, etc.)
 		ftsQ := `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
-		rows, err = a.db.QueryContext(r.Context(), `
+		rows, err = h.DB.QueryContext(r.Context(), `
 			SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
 			       c.topics, c.content_score, s.platform, s.channel_name, s.url
 			FROM clips_fts
@@ -176,7 +194,7 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		`, ftsQ)
 	}
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "search failed"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "search failed"})
 		return
 	}
 	defer rows.Close()
@@ -200,12 +218,13 @@ func (a *App) handleSearch(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("handleSearch: rows iteration error: %v", err)
+		log.Printf("HandleSearch: rows iteration error: %v", err)
 	}
-	writeJSON(w, 200, map[string]interface{}{"hits": hits, "query": q, "total": len(hits)})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"hits": hits, "query": q, "total": len(hits)})
 }
 
-func computeTopicBoost(clipTopics []string, weights map[string]float64) float64 {
+// ComputeTopicBoost computes a simple weighted average boost for clip topics.
+func ComputeTopicBoost(clipTopics []string, weights map[string]float64) float64 {
 	if len(clipTopics) == 0 {
 		return 1.0
 	}

@@ -1,4 +1,4 @@
-package main
+package feed
 
 import (
 	"context"
@@ -7,10 +7,14 @@ import (
 	"net/http"
 	"strings"
 
+	"clipfeed/auth"
+	"clipfeed/httputil"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 )
 
+// FilterQuery describes a saved filter's criteria.
 type FilterQuery struct {
 	Topics        *FilterTopics `json:"topics,omitempty"`
 	Channels      []string      `json:"channels,omitempty"`
@@ -20,32 +24,35 @@ type FilterQuery struct {
 	SimilarToClip string        `json:"similar_to_clip,omitempty"`
 }
 
+// FilterTopics holds topic inclusion/exclusion lists and matching mode.
 type FilterTopics struct {
 	Include []string `json:"include"`
 	Exclude []string `json:"exclude"`
 	Mode    string   `json:"mode"`
 }
 
+// FilterRange represents a numeric range with optional min and max.
 type FilterRange struct {
 	Min float64 `json:"min"`
 	Max float64 `json:"max"`
 }
 
-func (a *App) handleCreateFilter(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleCreateFilter creates a new saved filter for the authenticated user.
+func (h *Handler) HandleCreateFilter(w http.ResponseWriter, r *http.Request) {
+	userID, _ := auth.ExtractUserID(r)
 	var req struct {
 		Name      string          `json:"name"`
 		Query     json.RawMessage `json:"query"`
 		IsDefault bool            `json:"is_default"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
-		writeJSON(w, 400, map[string]string{"error": "name and query required"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "name and query required"})
 		return
 	}
 
 	var fq FilterQuery
 	if err := json.Unmarshal(req.Query, &fq); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid filter query"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid filter query"})
 		return
 	}
 
@@ -55,22 +62,23 @@ func (a *App) handleCreateFilter(w http.ResponseWriter, r *http.Request) {
 		isDefault = 1
 	}
 
-	_, err := a.db.ExecContext(r.Context(),
+	_, err := h.DB.ExecContext(r.Context(),
 		`INSERT INTO saved_filters (id, user_id, name, query, is_default) VALUES (?, ?, ?, ?, ?)`,
 		id, userID, req.Name, string(req.Query), isDefault)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to create filter"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to create filter"})
 		return
 	}
-	writeJSON(w, 201, map[string]interface{}{"id": id, "name": req.Name})
+	httputil.WriteJSON(w, 201, map[string]interface{}{"id": id, "name": req.Name})
 }
 
-func (a *App) handleListFilters(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
-	rows, err := a.db.QueryContext(r.Context(),
+// HandleListFilters returns all saved filters for the authenticated user.
+func (h *Handler) HandleListFilters(w http.ResponseWriter, r *http.Request) {
+	userID, _ := auth.ExtractUserID(r)
+	rows, err := h.DB.QueryContext(r.Context(),
 		`SELECT id, name, query, is_default, created_at FROM saved_filters WHERE user_id = ? ORDER BY created_at DESC`, userID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to list filters"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to list filters"})
 		return
 	}
 	defer rows.Close()
@@ -90,11 +98,12 @@ func (a *App) handleListFilters(w http.ResponseWriter, r *http.Request) {
 	if filters == nil {
 		filters = make([]map[string]interface{}, 0)
 	}
-	writeJSON(w, 200, map[string]interface{}{"filters": filters})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"filters": filters})
 }
 
-func (a *App) handleUpdateFilter(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleUpdateFilter updates a saved filter's name, query, or default status.
+func (h *Handler) HandleUpdateFilter(w http.ResponseWriter, r *http.Request) {
+	userID, _ := auth.ExtractUserID(r)
 	filterID := chi.URLParam(r, "id")
 	var req struct {
 		Name      string          `json:"name"`
@@ -102,19 +111,19 @@ func (a *App) handleUpdateFilter(w http.ResponseWriter, r *http.Request) {
 		IsDefault *bool           `json:"is_default"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid request body"})
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request body"})
 		return
 	}
 
 	if req.Name != "" {
-		if _, err := a.db.ExecContext(r.Context(), `UPDATE saved_filters SET name = ? WHERE id = ? AND user_id = ?`, req.Name, filterID, userID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to update filter"})
+		if _, err := h.DB.ExecContext(r.Context(), `UPDATE saved_filters SET name = ? WHERE id = ? AND user_id = ?`, req.Name, filterID, userID); err != nil {
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update filter"})
 			return
 		}
 	}
 	if req.Query != nil {
-		if _, err := a.db.ExecContext(r.Context(), `UPDATE saved_filters SET query = ? WHERE id = ? AND user_id = ?`, string(req.Query), filterID, userID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to update filter"})
+		if _, err := h.DB.ExecContext(r.Context(), `UPDATE saved_filters SET query = ? WHERE id = ? AND user_id = ?`, string(req.Query), filterID, userID); err != nil {
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update filter"})
 			return
 		}
 	}
@@ -123,25 +132,27 @@ func (a *App) handleUpdateFilter(w http.ResponseWriter, r *http.Request) {
 		if *req.IsDefault {
 			def = 1
 		}
-		if _, err := a.db.ExecContext(r.Context(), `UPDATE saved_filters SET is_default = ? WHERE id = ? AND user_id = ?`, def, filterID, userID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": "failed to update filter"})
+		if _, err := h.DB.ExecContext(r.Context(), `UPDATE saved_filters SET is_default = ? WHERE id = ? AND user_id = ?`, def, filterID, userID); err != nil {
+			httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update filter"})
 			return
 		}
 	}
-	writeJSON(w, 200, map[string]string{"status": "updated"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "updated"})
 }
 
-func (a *App) handleDeleteFilter(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleDeleteFilter deletes a saved filter.
+func (h *Handler) HandleDeleteFilter(w http.ResponseWriter, r *http.Request) {
+	userID, _ := auth.ExtractUserID(r)
 	filterID := chi.URLParam(r, "id")
-	if _, err := a.db.ExecContext(r.Context(), `DELETE FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to delete filter"})
+	if _, err := h.DB.ExecContext(r.Context(), `DELETE FROM saved_filters WHERE id = ? AND user_id = ?`, filterID, userID); err != nil {
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to delete filter"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
-func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID string, dedupeSeen24h bool) ([]map[string]interface{}, error) {
+// ApplyFilterToFeed executes a filter query and returns matching clips.
+func (h *Handler) ApplyFilterToFeed(ctx context.Context, fq *FilterQuery, userID string, dedupeSeen24h bool) ([]map[string]interface{}, error) {
 	where := []string{"c.status = 'ready'"}
 	var args []interface{}
 
@@ -156,7 +167,7 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 		}
 	}
 	if fq.RecencyDays > 0 {
-		where = append(where, a.db.DatetimeRecencyExpr())
+		where = append(where, h.DB.DatetimeRecencyExpr())
 		args = append(args, -fq.RecencyDays)
 	}
 	if fq.MinScore > 0 {
@@ -176,12 +187,12 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	if fq.Topics != nil && len(fq.Topics.Include) > 0 {
 		var topicIDs []string
 		if fq.Topics.Mode == "descendants" {
-			topicIDs = a.expandTopicDescendants(fq.Topics.Include)
+			topicIDs = h.ExpandTopicDescendants(fq.Topics.Include)
 		} else {
-			g := a.getTopicGraph()
+			g := h.GetTopicGraph()
 			if g != nil {
 				for _, name := range fq.Topics.Include {
-					if n := g.resolveByName(name); n != nil {
+					if n := g.ResolveByName(name); n != nil {
 						topicIDs = append(topicIDs, n.ID)
 					}
 				}
@@ -201,12 +212,12 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	if fq.Topics != nil && len(fq.Topics.Exclude) > 0 {
 		var excludeIDs []string
 		if fq.Topics.Mode == "descendants" {
-			excludeIDs = a.expandTopicDescendants(fq.Topics.Exclude)
+			excludeIDs = h.ExpandTopicDescendants(fq.Topics.Exclude)
 		} else {
-			g := a.getTopicGraph()
+			g := h.GetTopicGraph()
 			if g != nil {
 				for _, name := range fq.Topics.Exclude {
-					if n := g.resolveByName(name); n != nil {
+					if n := g.ResolveByName(name); n != nil {
 						excludeIDs = append(excludeIDs, n.ID)
 					}
 				}
@@ -223,7 +234,7 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	}
 
 	if userID != "" && dedupeSeen24h {
-		where = append(where, fmt.Sprintf("c.id NOT IN (SELECT clip_id FROM interactions WHERE user_id = ? AND created_at > %s)", a.db.DatetimeModifier("-24 hours")))
+		where = append(where, fmt.Sprintf("c.id NOT IN (SELECT clip_id FROM interactions WHERE user_id = ? AND created_at > %s)", h.DB.DatetimeModifier("-24 hours")))
 		args = append(args, userID)
 	}
 
@@ -235,13 +246,13 @@ func (a *App) applyFilterToFeed(ctx context.Context, fq *FilterQuery, userID str
 	       CAST(COALESCE(c.file_size_bytes, 0) AS REAL),
 	       COALESCE(%s, 0)
 	FROM clips c LEFT JOIN sources s ON c.source_id = s.id
-	WHERE `, a.db.AgeHoursExpr("c.created_at")) + strings.Join(where, " AND ") + `
+	WHERE `, h.DB.AgeHoursExpr("c.created_at")) + strings.Join(where, " AND ") + `
 	ORDER BY c.content_score DESC LIMIT 60`
 
-	rows, err := a.db.QueryContext(ctx, query, args...)
+	rows, err := h.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanClips(rows), nil
+	return httputil.ScanClips(rows), nil
 }

@@ -3,16 +3,29 @@ package main
 import (
 	"context"
 	"database/sql"
-	_ "embed"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
+
+	"clipfeed/admin"
+	"clipfeed/auth"
+	"clipfeed/clips"
+	"clipfeed/collections"
+	"clipfeed/db"
+	"clipfeed/feed"
+	"clipfeed/httputil"
+	"clipfeed/ingest"
+	"clipfeed/jobs"
+	"clipfeed/profile"
+	"clipfeed/ratelimit"
+	"clipfeed/saved"
+	"clipfeed/scout"
+	"clipfeed/worker"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -23,18 +36,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type App struct {
-	db    *CompatDB
-	minio *minio.Client
-	cfg   Config
-
-	tgMu       sync.RWMutex
-	topicGraph *TopicGraph
-
-	ltrMu    sync.RWMutex
-	ltrModel *LTRModel
-}
-
+// Config holds all environment-derived configuration.
 type Config struct {
 	DBDriver       string
 	DBPath         string
@@ -48,7 +50,7 @@ type Config struct {
 	JWTSecret      string
 	AdminJWTSecret string
 	CookieSecret   string
-	AdminUsername  string
+	AdminUsername   string
 	AdminPassword  string
 	Port           string
 	AllowedOrigins string
@@ -56,19 +58,16 @@ type Config struct {
 }
 
 // defaultSecrets lists the baked-in placeholder values that MUST be changed
-// before running in production.  When any of these remain, the server refuses
-// to start unless ALLOW_INSECURE_DEFAULTS=true (for local development only).
+// before running in production.
 var defaultSecrets = map[string]string{
-	"JWT_SECRET":      "supersecretkey",
+	"JWT_SECRET":       "supersecretkey",
 	"MINIO_SECRET_KEY": "changeme123",
-	"ADMIN_PASSWORD":  "changeme_admin_password",
+	"ADMIN_PASSWORD":   "changeme_admin_password",
 }
 
 func loadConfig() Config {
 	adminJWT := getEnv("ADMIN_JWT_SECRET", "")
 	if adminJWT == "" {
-		// Fall back to JWT_SECRET so existing deployments keep working,
-		// but operators should set a separate key.
 		adminJWT = getEnv("JWT_SECRET", "supersecretkey")
 	}
 	return Config{
@@ -84,7 +83,7 @@ func loadConfig() Config {
 		JWTSecret:      getEnv("JWT_SECRET", "supersecretkey"),
 		AdminJWTSecret: adminJWT,
 		CookieSecret:   getEnv("COOKIE_SECRET", getEnv("JWT_SECRET", "supersecretkey")),
-		AdminUsername:  getEnv("ADMIN_USERNAME", "admin"),
+		AdminUsername:   getEnv("ADMIN_USERNAME", "admin"),
 		AdminPassword:  getEnv("ADMIN_PASSWORD", "changeme_admin_password"),
 		Port:           getEnv("PORT", "8080"),
 		AllowedOrigins: getEnv("ALLOWED_ORIGINS", "*"),
@@ -124,13 +123,13 @@ func main() {
 		log.Println("WARNING: ALLOW_INSECURE_DEFAULTS=true — running with default secrets (development mode)")
 	}
 
-	// Database
-	var dialect Dialect
+	// --- Database ---
+	var dialect db.Dialect
 	var rawDB *sql.DB
 
 	switch strings.ToLower(cfg.DBDriver) {
 	case "postgres", "postgresql":
-		dialect = DialectPostgres
+		dialect = db.DialectPostgres
 		if cfg.DBURL == "" {
 			log.Fatal("DB_URL is required when DB_DRIVER=postgres")
 		}
@@ -143,19 +142,18 @@ func main() {
 		rawDB.SetMaxIdleConns(5)
 		rawDB.SetConnMaxLifetime(5 * time.Minute)
 
-		if err := runMigrations(rawDB, dialect); err != nil {
+		if err := db.RunMigrations(rawDB, dialect); err != nil {
 			log.Fatalf("failed to init postgres schema: %v", err)
 		}
 		log.Println("Using Postgres database")
 
 	default:
-		dialect = DialectSQLite
+		dialect = db.DialectSQLite
 		var err error
 		rawDB, err = sql.Open("sqlite", cfg.DBPath)
 		if err != nil {
 			log.Fatalf("failed to open database: %v", err)
 		}
-		// Allow concurrent reads in WAL mode: writes still serialize naturally
 		rawDB.SetMaxOpenConns(4)
 		rawDB.SetMaxIdleConns(4)
 		rawDB.SetConnMaxLifetime(0)
@@ -171,16 +169,16 @@ func main() {
 			}
 		}
 
-		if err := runMigrations(rawDB, dialect); err != nil {
+		if err := db.RunMigrations(rawDB, dialect); err != nil {
 			log.Fatalf("failed to init schema: %v", err)
 		}
 		log.Println("Using SQLite database")
 	}
 
-	db := NewCompatDB(rawDB, dialect)
-	defer db.Close()
+	compatDB := db.NewCompatDB(rawDB, dialect)
+	defer compatDB.Close()
 
-	// MinIO
+	// --- MinIO ---
 	minioClient, err := minio.New(cfg.MinioEndpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.MinioAccess, cfg.MinioSecret, ""),
 		Secure: cfg.MinioSSL,
@@ -189,7 +187,6 @@ func main() {
 		log.Fatalf("failed to connect to minio: %v", err)
 	}
 
-	// Ensure bucket exists
 	ctx := context.Background()
 	exists, err := minioClient.BucketExists(ctx, cfg.MinioBucket)
 	if err != nil {
@@ -202,49 +199,58 @@ func main() {
 		log.Printf("created bucket: %s", cfg.MinioBucket)
 	}
 
-	// Set public-read policy scoped to thumbnail prefix only — video streams
-	// remain protected behind presigned URLs.
 	publicPolicy := fmt.Sprintf(`{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::%s/clips/*/thumbnail.jpg"]}]}`, cfg.MinioBucket)
 	if err := minioClient.SetBucketPolicy(ctx, cfg.MinioBucket, publicPolicy); err != nil {
 		log.Printf("warning: failed to set public-read policy on bucket: %v", err)
 	}
 
-	app := &App{db: db, minio: minioClient, cfg: cfg}
-	app.refreshTopicGraph()
-	go app.topicGraphRefreshLoop()
-	app.ltrModel = app.loadLTRModel()
-	go app.ltrModelRefreshLoop()
+	// --- Handlers ---
+	authH := &auth.Handler{DB: compatDB, JWTSecret: cfg.JWTSecret}
+	feedH := &feed.Handler{DB: compatDB, MinioBucket: cfg.MinioBucket, LTRModelPath: cfg.L2RModelPath}
+	feedH.RefreshTopicGraph()
+	go feedH.TopicGraphRefreshLoop()
+	feedH.SetLTRModel(feedH.LoadLTRModel())
+	go feedH.LTRModelRefreshLoop()
 
-	// Rate limiters: auth endpoints get a tight limit, general API is more generous.
-	authRL := newRateLimiter(10, 1*time.Minute)  // 10 attempts per IP per minute
+	clipsH := &clips.Handler{DB: compatDB, Minio: minioClient, MinioBucket: cfg.MinioBucket}
+	adminH := &admin.Handler{DB: compatDB, AdminUsername: cfg.AdminUsername, AdminPassword: cfg.AdminPassword, AdminJWTSecret: cfg.AdminJWTSecret}
+	workerH := &worker.Handler{DB: compatDB, WorkerSecret: cfg.WorkerSecret, CookieSecret: cfg.CookieSecret}
+	ingestH := &ingest.Handler{DB: compatDB}
+	savedH := &saved.Handler{DB: compatDB, MinioBucket: cfg.MinioBucket}
+	collectionsH := &collections.Handler{DB: compatDB, MinioBucket: cfg.MinioBucket}
+	jobsH := &jobs.Handler{DB: compatDB}
+	profileH := &profile.Handler{DB: compatDB, CookieSecret: cfg.CookieSecret}
+	scoutH := &scout.Handler{DB: compatDB}
 
+	// --- Rate limiters ---
+	authRL := ratelimit.New(10, 1*time.Minute)
+
+	// --- Router ---
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
 
-	// Global request body size limit (1 MB) to prevent oversized payloads.
+	// Global request body size limit (1 MB).
 	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.Body = http.MaxBytesReader(w, r.Body, defaultBodyLimit)
-			next.ServeHTTP(w, r)
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			req.Body = http.MaxBytesReader(w, req.Body, httputil.DefaultBodyLimit)
+			next.ServeHTTP(w, req)
 		})
 	})
 
 	// Security headers
 	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("X-Frame-Options", "DENY")
 			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, req)
 		})
 	})
 
-	// CORS — AllowedOrigins is configurable via ALLOWED_ORIGINS (comma-separated).
-	// AllowCredentials is intentionally false: JWT tokens are sent via the
-	// Authorization header and do not require browser credential mode.
+	// CORS
 	allowedOrigins := strings.Split(cfg.AllowedOrigins, ",")
 	for i := range allowedOrigins {
 		allowedOrigins[i] = strings.TrimSpace(allowedOrigins[i])
@@ -258,99 +264,101 @@ func main() {
 		MaxAge:           300,
 	}))
 
+	// Health / config
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"status": "ok"})
+		httputil.WriteJSON(w, 200, map[string]string{"status": "ok"})
 	})
-
 	r.Get("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		aiEnabled := os.Getenv("ENABLE_AI") == "true"
 		w.Header().Set("Cache-Control", "public, max-age=300")
-		writeJSON(w, 200, map[string]interface{}{
-			"ai_enabled": aiEnabled,
-		})
+		httputil.WriteJSON(w, 200, map[string]interface{}{"ai_enabled": aiEnabled})
 	})
 
-	// Auth routes with rate limiting
+	// Auth routes (rate limited)
 	r.Group(func(r chi.Router) {
-		r.Use(rateLimitMiddleware(authRL))
-		r.Post("/api/auth/register", app.handleRegister)
-		r.Post("/api/auth/login", app.handleLogin)
-		r.Post("/api/admin/login", app.handleAdminLogin)
-	})
-	r.Get("/api/feed", app.optionalAuth(app.handleFeed))
-	r.Get("/api/clips/{id}", app.handleGetClip)
-	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
-	r.Get("/api/clips/{id}/similar", app.handleSimilarClips)
-	r.Get("/api/search", app.handleSearch)
-	r.Get("/api/topics", app.handleGetTopics)
-	r.Get("/api/topics/tree", app.handleGetTopicTree)
-
-	r.Group(func(r chi.Router) {
-		r.Use(app.adminAuthMiddleware)
-		r.Get("/api/admin/status", app.handleAdminStatus)
-		r.Get("/api/admin/llm_logs", app.handleAdminLLMLogs)
-		r.Post("/api/admin/clear-failed", app.handleClearFailedJobs)
+		r.Use(ratelimit.Middleware(authRL))
+		r.Post("/api/auth/register", authH.HandleRegister)
+		r.Post("/api/auth/login", authH.HandleLogin)
+		r.Post("/api/admin/login", adminH.HandleAdminLogin)
 	})
 
+	// Public routes
+	r.Get("/api/feed", authH.OptionalAuth(feedH.HandleFeed))
+	r.Get("/api/clips/{id}", clipsH.HandleGetClip)
+	r.Get("/api/clips/{id}/stream", clipsH.HandleStreamClip)
+	r.Get("/api/clips/{id}/similar", feedH.HandleSimilarClips)
+	r.Get("/api/search", feedH.HandleSearch)
+	r.Get("/api/topics", feedH.HandleGetTopics)
+	r.Get("/api/topics/tree", feedH.HandleGetTopicTree)
+
+	// Admin routes
 	r.Group(func(r chi.Router) {
-		r.Use(app.authMiddleware)
-		r.Post("/api/clips/{id}/summary", app.handleClipSummary)
-		r.Post("/api/clips/{id}/interact", app.handleInteraction)
-		r.Post("/api/clips/{id}/save", app.handleSaveClip)
-		r.Delete("/api/clips/{id}/save", app.handleUnsaveClip)
-		r.Post("/api/ingest", app.handleIngest)
-		r.Get("/api/jobs", app.handleListJobs)
-		r.Get("/api/jobs/{id}", app.handleGetJob)
-		r.Post("/api/jobs/{id}/cancel", app.handleCancelJob)
-		r.Post("/api/jobs/{id}/retry", app.handleRetryJob)
-		r.Delete("/api/jobs/{id}", app.handleDismissJob)
-		r.Get("/api/me", app.handleGetProfile)
-		r.Put("/api/me/preferences", app.handleUpdatePreferences)
-		r.Get("/api/me/saved", app.handleListSaved)
-		r.Get("/api/me/history", app.handleListHistory)
-		r.Get("/api/me/cookies", app.handleListCookieStatus)
-		r.Put("/api/me/cookies/{platform}", app.handleSetCookie)
-		r.Delete("/api/me/cookies/{platform}", app.handleDeleteCookie)
-		r.Post("/api/collections", app.handleCreateCollection)
-		r.Get("/api/collections", app.handleListCollections)
-		r.Get("/api/collections/{id}/clips", app.handleGetCollectionClips)
-		r.Post("/api/collections/{id}/clips", app.handleAddToCollection)
-		r.Delete("/api/collections/{id}/clips/{clipId}", app.handleRemoveFromCollection)
-		r.Delete("/api/collections/{id}", app.handleDeleteCollection)
+		r.Use(adminH.AdminAuthMiddleware)
+		r.Get("/api/admin/status", adminH.HandleAdminStatus)
+		r.Get("/api/admin/llm_logs", adminH.HandleAdminLLMLogs)
+		r.Post("/api/admin/clear-failed", adminH.HandleClearFailedJobs)
+	})
+
+	// Authenticated user routes
+	r.Group(func(r chi.Router) {
+		r.Use(authH.AuthMiddleware)
+		r.Post("/api/clips/{id}/summary", clipsH.HandleClipSummary)
+		r.Post("/api/clips/{id}/interact", clipsH.HandleInteraction)
+		r.Post("/api/clips/{id}/save", savedH.HandleSaveClip)
+		r.Delete("/api/clips/{id}/save", savedH.HandleUnsaveClip)
+		r.Post("/api/ingest", ingestH.HandleIngest)
+		r.Get("/api/jobs", jobsH.HandleListJobs)
+		r.Get("/api/jobs/{id}", jobsH.HandleGetJob)
+		r.Post("/api/jobs/{id}/cancel", jobsH.HandleCancelJob)
+		r.Post("/api/jobs/{id}/retry", jobsH.HandleRetryJob)
+		r.Delete("/api/jobs/{id}", jobsH.HandleDismissJob)
+		r.Get("/api/me", profileH.HandleGetProfile)
+		r.Put("/api/me/preferences", profileH.HandleUpdatePreferences)
+		r.Get("/api/me/saved", savedH.HandleListSaved)
+		r.Get("/api/me/history", savedH.HandleListHistory)
+		r.Get("/api/me/cookies", profileH.HandleListCookieStatus)
+		r.Put("/api/me/cookies/{platform}", profileH.HandleSetCookie)
+		r.Delete("/api/me/cookies/{platform}", profileH.HandleDeleteCookie)
+		r.Post("/api/collections", collectionsH.HandleCreateCollection)
+		r.Get("/api/collections", collectionsH.HandleListCollections)
+		r.Get("/api/collections/{id}/clips", collectionsH.HandleGetCollectionClips)
+		r.Post("/api/collections/{id}/clips", collectionsH.HandleAddToCollection)
+		r.Delete("/api/collections/{id}/clips/{clipId}", collectionsH.HandleRemoveFromCollection)
+		r.Delete("/api/collections/{id}", collectionsH.HandleDeleteCollection)
 
 		// Saved filters
-		r.Post("/api/filters", app.handleCreateFilter)
-		r.Get("/api/filters", app.handleListFilters)
-		r.Put("/api/filters/{id}", app.handleUpdateFilter)
-		r.Delete("/api/filters/{id}", app.handleDeleteFilter)
+		r.Post("/api/filters", feedH.HandleCreateFilter)
+		r.Get("/api/filters", feedH.HandleListFilters)
+		r.Put("/api/filters/{id}", feedH.HandleUpdateFilter)
+		r.Delete("/api/filters/{id}", feedH.HandleDeleteFilter)
 
 		// Content scout
-		r.Post("/api/scout/sources", app.handleCreateScoutSource)
-		r.Get("/api/scout/sources", app.handleListScoutSources)
-		r.Patch("/api/scout/sources/{id}", app.handleUpdateScoutSource)
-		r.Delete("/api/scout/sources/{id}", app.handleDeleteScoutSource)
-		r.Post("/api/scout/sources/{id}/trigger", app.handleTriggerScoutSource)
-		r.Get("/api/scout/candidates", app.handleListScoutCandidates)
-		r.Post("/api/scout/candidates/{id}/approve", app.handleApproveCandidate)
-		r.Get("/api/scout/profile", app.handleGetScoutProfile)
+		r.Post("/api/scout/sources", scoutH.HandleCreateScoutSource)
+		r.Get("/api/scout/sources", scoutH.HandleListScoutSources)
+		r.Patch("/api/scout/sources/{id}", scoutH.HandleUpdateScoutSource)
+		r.Delete("/api/scout/sources/{id}", scoutH.HandleDeleteScoutSource)
+		r.Post("/api/scout/sources/{id}/trigger", scoutH.HandleTriggerScoutSource)
+		r.Get("/api/scout/candidates", scoutH.HandleListScoutCandidates)
+		r.Post("/api/scout/candidates/{id}/approve", scoutH.HandleApproveCandidate)
+		r.Get("/api/scout/profile", scoutH.HandleGetScoutProfile)
 	})
 
-	// Internal worker API (authenticated via WORKER_SECRET)
+	// Internal worker API
 	r.Group(func(r chi.Router) {
-		r.Use(app.workerAuthMiddleware)
-		r.Post("/api/internal/jobs/claim", app.handleWorkerClaimJob)
-		r.Put("/api/internal/jobs/{id}", app.handleWorkerUpdateJob)
-		r.Get("/api/internal/jobs/{id}", app.handleWorkerGetJob)
-		r.Post("/api/internal/jobs/reclaim", app.handleWorkerReclaimStale)
-		r.Put("/api/internal/sources/{id}", app.handleWorkerUpdateSource)
-		r.Get("/api/internal/sources/{id}/cookie", app.handleWorkerGetCookie)
-		r.Post("/api/internal/clips", app.handleWorkerCreateClip)
-		r.Post("/api/internal/topics/resolve", app.handleWorkerResolveTopic)
-		r.Post("/api/internal/scores/update", app.handleWorkerScoreUpdate)
+		r.Use(workerH.WorkerAuthMiddleware)
+		r.Post("/api/internal/jobs/claim", workerH.HandleClaimJob)
+		r.Put("/api/internal/jobs/{id}", workerH.HandleUpdateJob)
+		r.Get("/api/internal/jobs/{id}", workerH.HandleGetJob)
+		r.Post("/api/internal/jobs/reclaim", workerH.HandleReclaimStale)
+		r.Put("/api/internal/sources/{id}", workerH.HandleUpdateSource)
+		r.Get("/api/internal/sources/{id}/cookie", workerH.HandleGetCookie)
+		r.Post("/api/internal/clips", workerH.HandleCreateClip)
+		r.Post("/api/internal/topics/resolve", workerH.HandleResolveTopic)
+		r.Post("/api/internal/scores/update", workerH.HandleScoreUpdate)
 	})
 
+	// --- Start server ---
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
-
 	go func() {
 		log.Printf("ClipFeed API listening on :%s", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

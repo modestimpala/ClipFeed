@@ -1,4 +1,4 @@
-package main
+package db
 
 import (
 	"context"
@@ -6,10 +6,10 @@ import (
 	"log"
 )
 
-// withTx executes fn inside a transaction on a dedicated connection.
+// WithTx executes fn inside a transaction on a dedicated connection.
 // Uses BEGIN IMMEDIATE for SQLite or plain BEGIN for Postgres.
 // If fn returns an error, the transaction is rolled back.
-func withTx(ctx context.Context, db *CompatDB, fn func(conn *CompatConn) error) error {
+func WithTx(ctx context.Context, db *CompatDB, fn func(conn *CompatConn) error) error {
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire conn: %w", err)

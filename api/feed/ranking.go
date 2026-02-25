@@ -1,25 +1,21 @@
-package main
+package feed
 
 import (
 	"context"
 	"database/sql"
-	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log"
 	"math"
-	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-
-	"github.com/go-chi/chi/v5"
 )
 
 // --- Learning-to-Rank ---
 
+// LTRTree represents a single node in a gradient-boosted decision tree.
 type LTRTree struct {
 	FeatureIndex int     `json:"feature_index"`
 	Threshold    float64 `json:"threshold"`
@@ -29,12 +25,14 @@ type LTRTree struct {
 	IsLeaf       bool    `json:"is_leaf"`
 }
 
+// LTRModel is a trained learning-to-rank model (gradient-boosted trees).
 type LTRModel struct {
 	Trees        [][]LTRTree `json:"trees"`
 	FeatureNames []string    `json:"feature_names"`
 	NumFeatures  int         `json:"num_features"`
 }
 
+// Score returns the model's prediction for the given feature vector.
 func (m *LTRModel) Score(features []float64) float64 {
 	if m == nil || len(m.Trees) == 0 || len(features) == 0 {
 		return 0
@@ -74,14 +72,16 @@ func (m *LTRModel) scoreTree(nodes []LTRTree, features []float64) float64 {
 	return 0
 }
 
-func (a *App) getLTRModel() *LTRModel {
-	a.ltrMu.RLock()
-	defer a.ltrMu.RUnlock()
-	return a.ltrModel
+// GetLTRModel returns the current in-memory LTR model (thread-safe).
+func (h *Handler) GetLTRModel() *LTRModel {
+	h.ltrMu.RLock()
+	defer h.ltrMu.RUnlock()
+	return h.ltrModel
 }
 
-func (a *App) loadLTRModel() *LTRModel {
-	modelPath := a.cfg.L2RModelPath
+// LoadLTRModel reads the LTR model from disk.
+func (h *Handler) LoadLTRModel() *LTRModel {
+	modelPath := h.LTRModelPath
 	if modelPath == "" {
 		modelPath = "/data/l2r_model.json"
 	}
@@ -103,6 +103,24 @@ func (a *App) loadLTRModel() *LTRModel {
 	}
 	log.Printf("LTR model loaded: %d trees, %d features", len(model.Trees), model.NumFeatures)
 	return &model
+}
+
+// SetLTRModel replaces the in-memory LTR model (thread-safe).
+func (h *Handler) SetLTRModel(m *LTRModel) {
+	h.ltrMu.Lock()
+	h.ltrModel = m
+	h.ltrMu.Unlock()
+}
+
+// LTRModelRefreshLoop periodically reloads the LTR model from disk.
+func (h *Handler) LTRModelRefreshLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if m := h.LoadLTRModel(); m != nil {
+			h.SetLTRModel(m)
+		}
+	}
 }
 
 var ltrFeatureNames = []string{
@@ -138,23 +156,25 @@ type FeedPrefs struct {
 	FreshnessBias float64 // 0 = old content ok, 1 = strongly prefer fresh
 }
 
-func (a *App) rankFeed(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64, fp FeedPrefs) {
+// RankFeed post-processes the candidate clip list with LTR, topic boosts,
+// trending signals, and diversity reranking.
+func (h *Handler) RankFeed(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64, fp FeedPrefs) {
 	if len(clips) == 0 {
 		return
 	}
 
-	if model := a.getLTRModel(); model != nil && len(model.Trees) > 0 {
-		a.applyLTRRanking(ctx, clips, userID, model)
+	if model := h.GetLTRModel(); model != nil && len(model.Trees) > 0 {
+		h.applyLTRRanking(ctx, clips, userID, model)
 	} else {
-		a.applyTopicBoost(ctx, clips, userID, topicWeights)
+		h.applyTopicBoost(ctx, clips, userID, topicWeights)
 	}
 
 	if fp.TrendingBoost {
-		a.applyTrendingBoost(ctx, clips)
+		h.applyTrendingBoost(ctx, clips)
 	}
 
 	if fp.DiversityMix > 0 {
-		a.applyDiversityPenalty(clips, fp.DiversityMix)
+		h.applyDiversityPenalty(clips, fp.DiversityMix)
 	}
 
 	for _, clip := range clips {
@@ -167,13 +187,11 @@ func (a *App) rankFeed(ctx context.Context, clips []map[string]interface{}, user
 	}
 }
 
-func (a *App) applyDiversityPenalty(clips []map[string]interface{}, diversityMix float64) {
+func (h *Handler) applyDiversityPenalty(clips []map[string]interface{}, diversityMix float64) {
 	if len(clips) <= 1 {
 		return
 	}
 
-	// Scale penalty strengths by diversity_mix: 0=no penalty, 1=max penalty
-	// Base decay rates at mix=1: topic 0.6, channel 0.5, platform 0.84
 	topicDecay := 1.0 - diversityMix*0.4
 	channelDecay := 1.0 - diversityMix*0.5
 	platformDecay := 1.0 - diversityMix*0.16
@@ -221,7 +239,6 @@ func (a *App) applyDiversityPenalty(clips []map[string]interface{}, diversityMix
 				}
 			}
 
-			// Platform diversity: gentle penalty to avoid all-YouTube or all-TikTok feeds
 			platformPenalty := 1.0
 			if p, ok := clip["platform"].(*string); ok && p != nil && *p != "" {
 				if count, ok := seenPlatforms[*p]; ok {
@@ -259,9 +276,7 @@ func (a *App) applyDiversityPenalty(clips []map[string]interface{}, diversityMix
 	}
 }
 
-// applyTrendingBoost applies a velocity-based boost to clips with recent engagement.
-// Inspired by TikTok/YouTube trending signals: content gaining traction gets a lift.
-func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interface{}) {
+func (h *Handler) applyTrendingBoost(ctx context.Context, clips []map[string]interface{}) {
 	if len(clips) == 0 {
 		return
 	}
@@ -283,8 +298,8 @@ func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interfa
 		args[i] = id
 	}
 
-	dtExpr := a.db.DatetimeModifier("-6 hours")
-	rows, err := a.db.QueryContext(ctx,
+	dtExpr := h.DB.DatetimeModifier("-6 hours")
+	rows, err := h.DB.QueryContext(ctx,
 		`SELECT clip_id, COUNT(*) FROM interactions
 		 WHERE clip_id IN (`+strings.Join(ph, ",")+`)
 		   AND created_at > `+dtExpr+`
@@ -314,7 +329,6 @@ func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interfa
 	for _, clip := range clips {
 		id, _ := clip["id"].(string)
 		if v, ok := velocity[id]; ok && v > 0 {
-			// Log-scaled trending boost: avoids runaway popularity while rewarding traction
 			trendBoost := 1.0 + math.Log1p(v)*0.1
 			if s, ok := clip["_l2r_score"].(float64); ok {
 				clip["_l2r_score"] = s * trendBoost
@@ -325,7 +339,7 @@ func (a *App) applyTrendingBoost(ctx context.Context, clips []map[string]interfa
 	}
 }
 
-func (a *App) applyLTRRanking(ctx context.Context, clips []map[string]interface{}, userID string, model *LTRModel) {
+func (h *Handler) applyLTRRanking(ctx context.Context, clips []map[string]interface{}, userID string, model *LTRModel) {
 	if model == nil || len(clips) == 0 {
 		return
 	}
@@ -338,7 +352,7 @@ func (a *App) applyLTRRanking(ctx context.Context, clips []map[string]interface{
 		return
 	}
 
-	stats := a.loadLTRUserStats(ctx, userID)
+	stats := h.loadLTRUserStats(ctx, userID)
 	clipIDs := make([]string, 0, len(clips))
 	sourceIDs := make(map[string]string, len(clips))
 	for _, clip := range clips {
@@ -351,7 +365,7 @@ func (a *App) applyLTRRanking(ctx context.Context, clips []map[string]interface{
 		sourceIDs[clipID] = sourceID
 	}
 
-	topicCount, topicOverlap := a.loadClipTopicStats(ctx, clipIDs, stats.TopicAffinities)
+	topicCount, topicOverlap := h.loadClipTopicStats(ctx, clipIDs, stats.TopicAffinities)
 
 	for i := range clips {
 		clip := clips[i]
@@ -402,7 +416,7 @@ func (a *App) applyLTRRanking(ctx context.Context, clips []map[string]interface{
 	})
 }
 
-func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats {
+func (h *Handler) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats {
 	stats := ltrUserStats{
 		HoursSinceLastSession: 24.0 * 7,
 		ChannelAffinity:       map[string]float64{},
@@ -415,7 +429,7 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 	var totalViews int
 	var avgWatch float64
 	var likeCount, saveCount int
-	if err := a.db.QueryRowContext(ctx, `
+	if err := h.DB.QueryRowContext(ctx, `
 		SELECT
 			COUNT(*),
 			COALESCE(AVG(COALESCE(watch_percentage, 0)), 0),
@@ -433,9 +447,9 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 		stats.SaveRate = float64(saveCount) / float64(totalViews)
 	}
 
-	ageExpr := a.db.AgeHoursExpr("MAX(created_at)")
+	ageExpr := h.DB.AgeHoursExpr("MAX(created_at)")
 	var hoursSince sql.NullFloat64
-	if err := a.db.QueryRowContext(ctx, `
+	if err := h.DB.QueryRowContext(ctx, `
 		SELECT `+ageExpr+`
 		FROM interactions
 		WHERE user_id = ?
@@ -446,7 +460,7 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 		stats.HoursSinceLastSession = hoursSince.Float64
 	}
 
-	rows, err := a.db.QueryContext(ctx, `
+	rows, err := h.DB.QueryContext(ctx, `
 		SELECT COALESCE(c.source_id, ''),
 		       SUM(CASE
 		           WHEN i.action IN ('dislike', 'skip') THEN -0.5
@@ -475,7 +489,7 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 		rows.Close()
 	}
 
-	topicRows, err := a.db.QueryContext(ctx, `SELECT topic_id FROM user_topic_affinities WHERE user_id = ?`, userID)
+	topicRows, err := h.DB.QueryContext(ctx, `SELECT topic_id FROM user_topic_affinities WHERE user_id = ?`, userID)
 	if err == nil {
 		for topicRows.Next() {
 			var topicID string
@@ -492,7 +506,7 @@ func (a *App) loadLTRUserStats(ctx context.Context, userID string) ltrUserStats 
 	return stats
 }
 
-func (a *App) loadClipTopicStats(ctx context.Context, clipIDs []string, userTopics map[string]struct{}) (map[string]int, map[string]int) {
+func (h *Handler) loadClipTopicStats(ctx context.Context, clipIDs []string, userTopics map[string]struct{}) (map[string]int, map[string]int) {
 	topicCount := make(map[string]int, len(clipIDs))
 	topicOverlap := make(map[string]int, len(clipIDs))
 	if len(clipIDs) == 0 {
@@ -506,7 +520,7 @@ func (a *App) loadClipTopicStats(ctx context.Context, clipIDs []string, userTopi
 		args[i] = id
 	}
 
-	rows, err := a.db.QueryContext(ctx,
+	rows, err := h.DB.QueryContext(ctx,
 		`SELECT clip_id, topic_id FROM clip_topics WHERE clip_id IN (`+strings.Join(ph, ",")+`)`, args...)
 	if err != nil {
 		return topicCount, topicOverlap
@@ -529,159 +543,3 @@ func (a *App) loadClipTopicStats(ctx context.Context, clipIDs []string, userTopi
 
 	return topicCount, topicOverlap
 }
-
-func (a *App) ltrModelRefreshLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		if m := a.loadLTRModel(); m != nil {
-			a.ltrMu.Lock()
-			a.ltrModel = m
-			a.ltrMu.Unlock()
-		}
-	}
-}
-
-// --- Embeddings ---
-
-func blobToFloat32(b []byte) []float32 {
-	if len(b) == 0 || len(b)%4 != 0 {
-		return nil
-	}
-	n := len(b) / 4
-	out := make([]float32, n)
-	for i := 0; i < n; i++ {
-		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4 : (i+1)*4]))
-	}
-	return out
-}
-
-func float32ToBlob(v []float32) []byte {
-	b := make([]byte, len(v)*4)
-	for i, f := range v {
-		binary.LittleEndian.PutUint32(b[i*4:(i+1)*4], math.Float32bits(f))
-	}
-	return b
-}
-
-func cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		ai, bi := float64(a[i]), float64(b[i])
-		dot += ai * bi
-		normA += ai * ai
-		normB += bi * bi
-	}
-	denom := math.Sqrt(normA) * math.Sqrt(normB)
-	if denom == 0 {
-		return 0
-	}
-	return dot / denom
-}
-
-func (a *App) handleSimilarClips(w http.ResponseWriter, r *http.Request) {
-	clipID := chi.URLParam(r, "id")
-	limitStr := r.URL.Query().Get("limit")
-	limit := 10
-	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 50 {
-		limit = n
-	}
-
-	var refText, refVisual []byte
-	err := a.db.QueryRowContext(r.Context(),
-		`SELECT text_embedding, visual_embedding FROM clip_embeddings WHERE clip_id = ?`, clipID,
-	).Scan(&refText, &refVisual)
-	if err != nil {
-		writeJSON(w, 404, map[string]string{"error": "no embeddings for this clip"})
-		return
-	}
-
-	refTextVec := blobToFloat32(refText)
-	refVisualVec := blobToFloat32(refVisual)
-	if refTextVec == nil && refVisualVec == nil {
-		writeJSON(w, 404, map[string]string{"error": "no embeddings for this clip"})
-		return
-	}
-
-	// TODO: For production scale (>10k clips), this brute-force text/visual embedding
-	// cosine similarity check should be replaced with an ANN index (e.g. pgvector or sqlite-vss).
-	rows, err := a.db.QueryContext(r.Context(), `
-		SELECT e.clip_id, e.text_embedding, e.visual_embedding,
-		       c.title, c.thumbnail_key, c.duration_seconds, c.content_score
-		FROM clip_embeddings e
-		JOIN clips c ON e.clip_id = c.id AND c.status = 'ready'
-		WHERE e.clip_id != ?
-		LIMIT 500
-	`, clipID)
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "query failed"})
-		return
-	}
-	defer rows.Close()
-
-	type scored struct {
-		data  map[string]interface{}
-		score float64
-	}
-	var results []scored
-
-	for rows.Next() {
-		var cid string
-		var tBlob, vBlob []byte
-		var title string
-		var thumbKey string
-		var dur, cs float64
-		if err := rows.Scan(&cid, &tBlob, &vBlob, &title, &thumbKey, &dur, &cs); err != nil {
-			continue
-		}
-
-		textSim := 0.0
-		visualSim := 0.0
-		hasText := refTextVec != nil && len(tBlob) > 0
-		hasVisual := refVisualVec != nil && len(vBlob) > 0
-
-		if hasText {
-			textSim = cosineSimilarity(refTextVec, blobToFloat32(tBlob))
-		}
-		if hasVisual {
-			visualSim = cosineSimilarity(refVisualVec, blobToFloat32(vBlob))
-		}
-
-		var sim float64
-		switch {
-		case hasText && hasVisual:
-			sim = textSim*0.6 + visualSim*0.4
-		case hasText:
-			sim = textSim
-		case hasVisual:
-			sim = visualSim
-		}
-
-		results = append(results, scored{
-			data: map[string]interface{}{
-				"id": cid, "title": title, "thumbnail_key": thumbKey,
-				"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbKey),
-				"duration_seconds": dur, "content_score": cs, "similarity": math.Round(sim*1000) / 1000,
-			},
-			score: sim,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("handleSimilarClips: rows iteration error: %v", err)
-	}
-
-	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
-	if len(results) > limit {
-		results = results[:limit]
-	}
-
-	clips := make([]map[string]interface{}, len(results))
-	for i, r := range results {
-		clips[i] = r.data
-	}
-	writeJSON(w, 200, map[string]interface{}{"clips": clips, "count": len(clips)})
-}
-

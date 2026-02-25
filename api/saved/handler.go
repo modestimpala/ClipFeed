@@ -1,52 +1,62 @@
-package main
+package saved
 
 import (
 	"encoding/json"
 	"net/http"
 
+	"clipfeed/auth"
+	"clipfeed/db"
+	"clipfeed/httputil"
+
 	"github.com/go-chi/chi/v5"
 )
 
-func (a *App) handleSaveClip(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// Handler holds dependencies for saved-clips and history endpoints.
+type Handler struct {
+	DB          *db.CompatDB
+	MinioBucket string
+}
+
+// HandleSaveClip saves a clip for the authenticated user.
+func (h *Handler) HandleSaveClip(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	clipID := chi.URLParam(r, "id")
 
-	// Verify clip exists before saving
 	var exists int
-	if err := a.db.QueryRowContext(r.Context(), `SELECT 1 FROM clips WHERE id = ?`, clipID).Scan(&exists); err != nil {
-		writeJSON(w, 404, map[string]string{"error": "clip not found"})
+	if err := h.DB.QueryRowContext(r.Context(), `SELECT 1 FROM clips WHERE id = ?`, clipID).Scan(&exists); err != nil {
+		httputil.WriteJSON(w, 404, map[string]string{"error": "clip not found"})
 		return
 	}
 
-	_, err := a.db.ExecContext(r.Context(),
+	_, err := h.DB.ExecContext(r.Context(),
 		`INSERT INTO saved_clips (user_id, clip_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
 		userID, clipID)
-
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to save clip"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to save clip"})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "saved"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "saved"})
 }
 
-func (a *App) handleUnsaveClip(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleUnsaveClip removes a saved clip.
+func (h *Handler) HandleUnsaveClip(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 	clipID := chi.URLParam(r, "id")
 
-	if _, err := a.db.ExecContext(r.Context(),
+	if _, err := h.DB.ExecContext(r.Context(),
 		`DELETE FROM saved_clips WHERE user_id = ? AND clip_id = ?`,
 		userID, clipID); err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to remove clip"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to remove clip"})
 		return
 	}
-
-	writeJSON(w, 200, map[string]string{"status": "removed"})
+	httputil.WriteJSON(w, 200, map[string]string{"status": "removed"})
 }
 
-func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleListSaved lists the user's saved clips.
+func (h *Handler) HandleListSaved(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 
-	rows, err := a.db.QueryContext(r.Context(), `
+	rows, err := h.DB.QueryContext(r.Context(), `
 		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key,
 		       c.topics, c.created_at, s.platform, s.channel_name, s.url
 		FROM saved_clips sc
@@ -56,9 +66,8 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 		ORDER BY sc.created_at DESC
 		LIMIT 200
 	`, userID)
-
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to list saved clips"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to list saved clips"})
 		return
 	}
 	defer rows.Close()
@@ -77,7 +86,7 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 		clips = append(clips, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
 			"thumbnail_key": thumbnailKey,
-			"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbnailKey),
+			"thumbnail_url": httputil.ThumbnailURL(h.MinioBucket, thumbnailKey),
 			"topics": topics, "created_at": createdAt,
 			"platform": platform, "channel_name": channelName, "source_url": sourceURL,
 		})
@@ -85,13 +94,14 @@ func (a *App) handleListSaved(w http.ResponseWriter, r *http.Request) {
 	if clips == nil {
 		clips = make([]map[string]interface{}, 0)
 	}
-	writeJSON(w, 200, map[string]interface{}{"clips": clips})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"clips": clips})
 }
 
-func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
-	userID := r.Context().Value(userIDKey).(string)
+// HandleListHistory lists the user's recent interaction history.
+func (h *Handler) HandleListHistory(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(auth.UserIDKey).(string)
 
-	rows, err := a.db.QueryContext(r.Context(), `
+	rows, err := h.DB.QueryContext(r.Context(), `
 		SELECT c.id, c.title, c.duration_seconds, c.thumbnail_key, i.action, i.created_at
 		FROM (
 			SELECT clip_id, action, created_at,
@@ -103,9 +113,8 @@ func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
 		ORDER BY i.created_at DESC
 		LIMIT 100
 	`, userID)
-
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to list history"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to list history"})
 		return
 	}
 	defer rows.Close()
@@ -121,12 +130,12 @@ func (a *App) handleListHistory(w http.ResponseWriter, r *http.Request) {
 		history = append(history, map[string]interface{}{
 			"id": id, "title": title, "duration_seconds": duration,
 			"thumbnail_key": thumbnailKey,
-			"thumbnail_url": thumbnailURL(a.cfg.MinioBucket, thumbnailKey),
+			"thumbnail_url": httputil.ThumbnailURL(h.MinioBucket, thumbnailKey),
 			"last_action": action, "at": at,
 		})
 	}
 	if history == nil {
 		history = make([]map[string]interface{}, 0)
 	}
-	writeJSON(w, 200, map[string]interface{}{"history": history})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"history": history})
 }

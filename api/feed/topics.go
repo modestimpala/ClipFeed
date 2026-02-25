@@ -1,4 +1,4 @@
-package main
+package feed
 
 import (
 	"context"
@@ -10,27 +10,27 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"clipfeed/httputil"
 )
 
 const topicDecayPerHop = 0.7
 const maxLateralHops = 2
 
 // normalizeTopicStem reduces topic names to a canonical stem for consolidation.
-// Conservative: only handles plurals and separator normalization to avoid false merges.
 func normalizeTopicStem(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
 	s = strings.ReplaceAll(s, "-", " ")
 	s = strings.ReplaceAll(s, "_", " ")
-	// "technologies" → "technology", "categories" → "category"
 	if len(s) > 4 && strings.HasSuffix(s, "ies") {
 		s = s[:len(s)-3] + "y"
 	} else if len(s) > 3 && s[len(s)-1] == 's' && s[len(s)-2] != 's' && s[len(s)-2] != 'u' && s[len(s)-2] != 'i' {
-		// "cars" → "car", "topics" → "topic" (but not "chess", "virus", "crisis")
 		s = s[:len(s)-1]
 	}
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// TopicNode represents a single topic in the hierarchy.
 type TopicNode struct {
 	ID        string
 	Name      string
@@ -41,32 +41,36 @@ type TopicNode struct {
 	ClipCount int
 }
 
+// TopicEdge represents a lateral relationship between topics.
 type TopicEdge struct {
 	TargetID string
 	Relation string
 	Weight   float64
 }
 
+// TopicGraph holds the in-memory topic hierarchy and edge graph.
 type TopicGraph struct {
-	nodes     map[string]*TopicNode
-	bySlug    map[string]*TopicNode
-	byName    map[string]*TopicNode
-	children  map[string][]string
-	edges     map[string][]TopicEdge
-	canonical map[string]string // topic_id → canonical topic_id for consolidated topics
+	Nodes     map[string]*TopicNode
+	BySlug    map[string]*TopicNode
+	ByName    map[string]*TopicNode
+	Children  map[string][]string
+	Edges     map[string][]TopicEdge
+	Canonical map[string]string // topic_id → canonical topic_id for consolidated topics
 }
 
-func (g *TopicGraph) resolveByName(name string) *TopicNode {
+// ResolveByName finds a topic node by its lowercase name.
+func (g *TopicGraph) ResolveByName(name string) *TopicNode {
 	if g == nil {
 		return nil
 	}
-	if n, ok := g.byName[strings.ToLower(name)]; ok {
+	if n, ok := g.ByName[strings.ToLower(name)]; ok {
 		return n
 	}
 	return nil
 }
 
-func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[string]float64) float64 {
+// ComputeBoost computes the topic-affinity boost for a clip's topics.
+func (g *TopicGraph) ComputeBoost(clipTopicIDs []string, userAffinities map[string]float64) float64 {
 	if len(clipTopicIDs) == 0 || len(userAffinities) == 0 {
 		return 1.0
 	}
@@ -80,16 +84,14 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 		if w, ok := userAffinities[ctID]; ok {
 			bestBoost = w
 		}
-		// Check canonical form for consolidated topics
-		if canonID, ok := g.canonical[ctID]; ok {
+		if canonID, ok := g.Canonical[ctID]; ok {
 			if w, ok := userAffinities[canonID]; ok && w > bestBoost {
 				bestBoost = w
 			}
 		}
 
-		node := g.nodes[ctID]
+		node := g.Nodes[ctID]
 		if node != nil {
-			// Walk ancestors: clip tagged "carbonara" matches user affinity for "cooking" with decay
 			hops := 0
 			current := node
 			for current.ParentID != "" {
@@ -100,13 +102,12 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 						bestBoost = decayed
 					}
 				}
-				current = g.nodes[current.ParentID]
+				current = g.Nodes[current.ParentID]
 				if current == nil {
 					break
 				}
 			}
 
-			// Walk descendants: user likes "cooking", clip tagged "carbonara" gets boost
 			g.walkDescendants(ctID, 1, func(childID string, depth int) {
 				if w, ok := userAffinities[childID]; ok {
 					decayed := w * math.Pow(topicDecayPerHop, float64(depth))
@@ -117,7 +118,6 @@ func (g *TopicGraph) computeBoost(clipTopicIDs []string, userAffinities map[stri
 			})
 		}
 
-		// Multi-hop lateral edges
 		g.walkLaterals(ctID, maxLateralHops, func(targetID string, hops int, weight float64) {
 			if w, ok := userAffinities[targetID]; ok {
 				lateral := w * weight * math.Pow(topicDecayPerHop, float64(hops))
@@ -143,7 +143,7 @@ func (g *TopicGraph) walkDescendants(nodeID string, depth int, fn func(childID s
 	if depth > 3 {
 		return
 	}
-	for _, childID := range g.children[nodeID] {
+	for _, childID := range g.Children[nodeID] {
 		fn(childID, depth)
 		g.walkDescendants(childID, depth+1, fn)
 	}
@@ -157,7 +157,7 @@ func (g *TopicGraph) walkLaterals(nodeID string, maxHops int, fn func(targetID s
 	}
 	seen := map[string]bool{nodeID: true}
 	queue := []visit{}
-	for _, edge := range g.edges[nodeID] {
+	for _, edge := range g.Edges[nodeID] {
 		queue = append(queue, visit{edge.TargetID, 1, edge.Weight})
 	}
 	for len(queue) > 0 {
@@ -169,7 +169,7 @@ func (g *TopicGraph) walkLaterals(nodeID string, maxHops int, fn func(targetID s
 		seen[v.id] = true
 		fn(v.id, v.hops, v.weight)
 		if v.hops < maxHops {
-			for _, edge := range g.edges[v.id] {
+			for _, edge := range g.Edges[v.id] {
 				if !seen[edge.TargetID] {
 					queue = append(queue, visit{edge.TargetID, v.hops + 1, v.weight * edge.Weight})
 				}
@@ -178,23 +178,25 @@ func (g *TopicGraph) walkLaterals(nodeID string, maxHops int, fn func(targetID s
 	}
 }
 
-func (a *App) getTopicGraph() *TopicGraph {
-	a.tgMu.RLock()
-	defer a.tgMu.RUnlock()
-	return a.topicGraph
+// GetTopicGraph returns the current in-memory topic graph (thread-safe).
+func (h *Handler) GetTopicGraph() *TopicGraph {
+	h.tgMu.RLock()
+	defer h.tgMu.RUnlock()
+	return h.topicGraph
 }
 
-func (a *App) loadTopicGraph() *TopicGraph {
+// LoadTopicGraph reads topics and edges from the database.
+func (h *Handler) LoadTopicGraph() *TopicGraph {
 	g := &TopicGraph{
-		nodes:     make(map[string]*TopicNode),
-		bySlug:    make(map[string]*TopicNode),
-		byName:    make(map[string]*TopicNode),
-		children:  make(map[string][]string),
-		edges:     make(map[string][]TopicEdge),
-		canonical: make(map[string]string),
+		Nodes:     make(map[string]*TopicNode),
+		BySlug:    make(map[string]*TopicNode),
+		ByName:    make(map[string]*TopicNode),
+		Children:  make(map[string][]string),
+		Edges:     make(map[string][]TopicEdge),
+		Canonical: make(map[string]string),
 	}
 
-	rows, err := a.db.Query("SELECT id, name, slug, path, parent_id, depth, clip_count FROM topics")
+	rows, err := h.DB.Query("SELECT id, name, slug, path, parent_id, depth, clip_count FROM topics")
 	if err != nil {
 		log.Printf("topic graph load failed: %v", err)
 		return g
@@ -210,18 +212,18 @@ func (a *App) loadTopicGraph() *TopicGraph {
 		if parentID.Valid {
 			n.ParentID = parentID.String
 		}
-		g.nodes[n.ID] = &n
-		g.bySlug[n.Slug] = &n
-		g.byName[strings.ToLower(n.Name)] = &n
+		g.Nodes[n.ID] = &n
+		g.BySlug[n.Slug] = &n
+		g.ByName[strings.ToLower(n.Name)] = &n
 		if parentID.Valid {
-			g.children[parentID.String] = append(g.children[parentID.String], n.ID)
+			g.Children[parentID.String] = append(g.Children[parentID.String], n.ID)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("topic graph node iteration error: %v", err)
 	}
 
-	edgeRows, err := a.db.Query("SELECT source_id, target_id, relation, weight FROM topic_edges")
+	edgeRows, err := h.DB.Query("SELECT source_id, target_id, relation, weight FROM topic_edges")
 	if err != nil {
 		log.Printf("topic edges load failed: %v", err)
 		return g
@@ -235,7 +237,7 @@ func (a *App) loadTopicGraph() *TopicGraph {
 		if err := edgeRows.Scan(&sourceID, &targetID, &relation, &weight); err != nil {
 			continue
 		}
-		g.edges[sourceID] = append(g.edges[sourceID], TopicEdge{
+		g.Edges[sourceID] = append(g.Edges[sourceID], TopicEdge{
 			TargetID: targetID,
 			Relation: relation,
 			Weight:   weight,
@@ -246,11 +248,11 @@ func (a *App) loadTopicGraph() *TopicGraph {
 		log.Printf("topic graph edge iteration error: %v", err)
 	}
 
-	log.Printf("Topic graph loaded: %d nodes, %d edges", len(g.nodes), edgeCount)
+	log.Printf("Topic graph loaded: %d nodes, %d edges", len(g.Nodes), edgeCount)
 
-	// Topic consolidation: group by normalized stem, pick highest clip_count as canonical
+	// Topic consolidation
 	stemGroups := make(map[string][]*TopicNode)
-	for _, node := range g.nodes {
+	for _, node := range g.Nodes {
 		stem := normalizeTopicStem(node.Name)
 		stemGroups[stem] = append(stemGroups[stem], node)
 	}
@@ -264,7 +266,7 @@ func (a *App) loadTopicGraph() *TopicGraph {
 		})
 		canon := group[0]
 		for _, node := range group[1:] {
-			g.canonical[node.ID] = canon.ID
+			g.Canonical[node.ID] = canon.ID
 			mergeCount++
 		}
 	}
@@ -275,25 +277,27 @@ func (a *App) loadTopicGraph() *TopicGraph {
 	return g
 }
 
-func (a *App) refreshTopicGraph() {
-	g := a.loadTopicGraph()
-	a.tgMu.Lock()
-	a.topicGraph = g
-	a.tgMu.Unlock()
+// RefreshTopicGraph reloads the topic graph from the database.
+func (h *Handler) RefreshTopicGraph() {
+	g := h.LoadTopicGraph()
+	h.tgMu.Lock()
+	h.topicGraph = g
+	h.tgMu.Unlock()
 }
 
-func (a *App) topicGraphRefreshLoop() {
+// TopicGraphRefreshLoop periodically refreshes the topic graph.
+func (h *Handler) TopicGraphRefreshLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		a.refreshTopicGraph()
+		h.RefreshTopicGraph()
 	}
 }
 
-// applyTopicBoost re-ranks clips using graph-aware topic affinity, falling back to legacy string matching.
-func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64) {
-	g := a.getTopicGraph()
-	hasGraph := g != nil && len(g.nodes) > 0
+// applyTopicBoost re-ranks clips using graph-aware topic affinity.
+func (h *Handler) applyTopicBoost(ctx context.Context, clips []map[string]interface{}, userID string, topicWeights map[string]float64) {
+	g := h.GetTopicGraph()
+	hasGraph := g != nil && len(g.Nodes) > 0
 
 	if len(topicWeights) == 0 && !hasGraph {
 		return
@@ -303,12 +307,12 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 
 	if hasGraph {
 		for name, weight := range topicWeights {
-			if node := g.resolveByName(name); node != nil {
+			if node := g.ResolveByName(name); node != nil {
 				userAffinities[node.ID] = weight
 			}
 		}
 		if userID != "" {
-			rows, err := a.db.QueryContext(ctx,
+			rows, err := h.DB.QueryContext(ctx,
 				`SELECT topic_id, weight FROM user_topic_affinities WHERE user_id = ?`, userID)
 			if err == nil {
 				for rows.Next() {
@@ -325,10 +329,9 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 				rows.Close()
 			}
 		}
-		// Propagate affinities to canonical forms so consolidated topics match
-		if len(g.canonical) > 0 {
+		if len(g.Canonical) > 0 {
 			for tid, w := range userAffinities {
-				if canonID, ok := g.canonical[tid]; ok {
+				if canonID, ok := g.Canonical[tid]; ok {
 					if existing, exists := userAffinities[canonID]; !exists || w > existing {
 						userAffinities[canonID] = w
 					}
@@ -352,7 +355,7 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 				ph[i] = "?"
 				args[i] = id
 			}
-			rows, err := a.db.QueryContext(ctx,
+			rows, err := h.DB.QueryContext(ctx,
 				`SELECT clip_id, topic_id FROM clip_topics WHERE clip_id IN (`+strings.Join(ph, ",")+`)`, args...)
 			if err == nil {
 				for rows.Next() {
@@ -374,9 +377,9 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 	var userEmb []float32
 	if userID != "" {
 		var blob []byte
-		row := a.db.QueryRowContext(ctx, `SELECT text_embedding FROM user_embeddings WHERE user_id = ?`, userID)
+		row := h.DB.QueryRowContext(ctx, `SELECT text_embedding FROM user_embeddings WHERE user_id = ?`, userID)
 		if row.Scan(&blob) == nil {
-			userEmb = blobToFloat32(blob)
+			userEmb = BlobToFloat32(blob)
 		}
 	}
 
@@ -396,7 +399,7 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 				ph[i] = "?"
 				args[i] = id
 			}
-			embRows, err := a.db.QueryContext(ctx,
+			embRows, err := h.DB.QueryContext(ctx,
 				`SELECT clip_id, text_embedding FROM clip_embeddings WHERE clip_id IN (`+strings.Join(ph, ",")+`)`, args...)
 			if err == nil {
 				for embRows.Next() {
@@ -405,7 +408,7 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 					if err := embRows.Scan(&cid, &blob); err != nil {
 						continue
 					}
-					if v := blobToFloat32(blob); v != nil {
+					if v := BlobToFloat32(blob); v != nil {
 						clipEmbMap[cid] = v
 					}
 				}
@@ -423,15 +426,15 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 
 		graphBoost := 1.0
 		if graphTopics := clipTopicMap[clipID]; len(graphTopics) > 0 && hasGraph && len(userAffinities) > 0 {
-			graphBoost = g.computeBoost(graphTopics, userAffinities)
+			graphBoost = g.ComputeBoost(graphTopics, userAffinities)
 		} else if len(topicWeights) > 0 {
 			topics, _ := clip["topics"].([]string)
-			graphBoost = computeTopicBoost(topics, topicWeights)
+			graphBoost = ComputeTopicBoost(topics, topicWeights)
 		}
 
 		embSim := 0.0
 		if clipEmb, ok := clipEmbMap[clipID]; ok && len(userEmb) > 0 {
-			embSim = cosineSimilarity(userEmb, clipEmb)
+			embSim = CosineSimilarity(userEmb, clipEmb)
 			if embSim < 0 {
 				embSim = 0
 			}
@@ -454,9 +457,9 @@ func (a *App) applyTopicBoost(ctx context.Context, clips []map[string]interface{
 	})
 }
 
-func (a *App) handleGetTopics(w http.ResponseWriter, r *http.Request) {
-	// Use topics table when populated; otherwise fall back to legacy JSON scan
-	rows, err := a.db.QueryContext(r.Context(), `
+// HandleGetTopics returns topics from the topics table, falling back to legacy JSON scan.
+func (h *Handler) HandleGetTopics(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.QueryContext(r.Context(), `
 		SELECT id, name, slug, path, parent_id, depth, clip_count
 		FROM topics ORDER BY clip_count DESC LIMIT 50
 	`)
@@ -480,20 +483,20 @@ func (a *App) handleGetTopics(w http.ResponseWriter, r *http.Request) {
 			topics = append(topics, t)
 		}
 		if len(topics) > 0 {
-			writeJSON(w, 200, map[string]interface{}{"topics": topics})
+			httputil.WriteJSON(w, 200, map[string]interface{}{"topics": topics})
 			return
 		}
 	}
 
-	a.handleGetTopicsLegacy(w, r)
+	h.handleGetTopicsLegacy(w, r)
 }
 
-func (a *App) handleGetTopicsLegacy(w http.ResponseWriter, r *http.Request) {
-	rows, err := a.db.QueryContext(r.Context(), `
+func (h *Handler) handleGetTopicsLegacy(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.DB.QueryContext(r.Context(), `
 		SELECT topics FROM clips WHERE status = 'ready' AND topics != '[]'
 	`)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": "failed to fetch topics"})
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to fetch topics"})
 		return
 	}
 	defer rows.Close()
@@ -528,13 +531,14 @@ func (a *App) handleGetTopicsLegacy(w http.ResponseWriter, r *http.Request) {
 		result = result[:20]
 	}
 
-	writeJSON(w, 200, map[string]interface{}{"topics": result})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"topics": result})
 }
 
-func (a *App) handleGetTopicTree(w http.ResponseWriter, r *http.Request) {
-	g := a.getTopicGraph()
-	if g == nil || len(g.nodes) == 0 {
-		writeJSON(w, 200, map[string]interface{}{"tree": []interface{}{}})
+// HandleGetTopicTree returns the topic hierarchy as a nested tree.
+func (h *Handler) HandleGetTopicTree(w http.ResponseWriter, r *http.Request) {
+	g := h.GetTopicGraph()
+	if g == nil || len(g.Nodes) == 0 {
+		httputil.WriteJSON(w, 200, map[string]interface{}{"tree": []interface{}{}})
 		return
 	}
 
@@ -547,14 +551,14 @@ func (a *App) handleGetTopicTree(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nodeMap := make(map[string]*treeNode)
-	for id, n := range g.nodes {
+	for id, n := range g.Nodes {
 		nodeMap[id] = &treeNode{
 			ID: n.ID, Name: n.Name, Slug: n.Slug, ClipCount: n.ClipCount,
 		}
 	}
 
 	var roots []*treeNode
-	for id, n := range g.nodes {
+	for id, n := range g.Nodes {
 		tn := nodeMap[id]
 		if n.ParentID == "" {
 			roots = append(roots, tn)
@@ -569,18 +573,19 @@ func (a *App) handleGetTopicTree(w http.ResponseWriter, r *http.Request) {
 		return roots[i].ClipCount > roots[j].ClipCount
 	})
 
-	writeJSON(w, 200, map[string]interface{}{"tree": roots})
+	httputil.WriteJSON(w, 200, map[string]interface{}{"tree": roots})
 }
 
-func (a *App) expandTopicDescendants(topicNames []string) []string {
-	g := a.getTopicGraph()
+// ExpandTopicDescendants returns all topic IDs that are descendants of the given names.
+func (h *Handler) ExpandTopicDescendants(topicNames []string) []string {
+	g := h.GetTopicGraph()
 	if g == nil {
 		return nil
 	}
 	seen := make(map[string]bool)
 	var ids []string
 	for _, name := range topicNames {
-		node := g.resolveByName(name)
+		node := g.ResolveByName(name)
 		if node == nil {
 			continue
 		}
@@ -591,7 +596,7 @@ func (a *App) expandTopicDescendants(topicNames []string) []string {
 			}
 			seen[id] = true
 			ids = append(ids, id)
-			for _, child := range g.children[id] {
+			for _, child := range g.Children[id] {
 				walk(child)
 			}
 		}

@@ -1,4 +1,5 @@
-.env
+.env*
+!.env.example
 *.env.local
 node_modules/
 web/dist/
