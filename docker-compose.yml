@@ -10,9 +10,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-changeme123}
     volumes:
       - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -47,8 +46,13 @@ services:
       ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
       - db_data:/data
-    ports:
-      - "8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   # --- Ingestion Worker ---
   worker:
@@ -83,6 +87,10 @@ services:
     volumes:
       - db_data:/data
       - worker_tmp:/tmp/clipfeed
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:
@@ -100,6 +108,13 @@ services:
       SCORE_UPDATE_INTERVAL: "${SCORE_UPDATE_INTERVAL:-900}"
     volumes:
       - db_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     command: ["python", "score_updater.py"]
 
   # --- Web Frontend ---
@@ -111,8 +126,19 @@ services:
     restart: unless-stopped
     depends_on:
       - api
-    ports:
-      - "3000:3000"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
 
   # --- Local LLM (Ollama by default) ---
   llm:
@@ -122,8 +148,8 @@ services:
     restart: unless-stopped
     volumes:
       - llm_data:/root/.ollama
-    ports:
-      - "11434:11434"
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:
@@ -151,6 +177,13 @@ services:
       LLM_THRESHOLD: "${LLM_THRESHOLD:-6}"
     volumes:
       - db_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:
@@ -169,6 +202,19 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   minio_data:
