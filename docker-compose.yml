@@ -71,6 +71,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_PASSWORD:-changeme123}
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
+      JWT_SECRET: ${JWT_SECRET:-supersecretkey}
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       MAX_CONCURRENT_JOBS: ${MAX_WORKERS:-2}
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
@@ -134,6 +135,7 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      - CHOWN
       - NET_BIND_SERVICE
       - SETUID
       - SETGID
@@ -210,6 +212,7 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      - CHOWN
       - NET_BIND_SERVICE
       - SETUID
       - SETGID

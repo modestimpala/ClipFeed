@@ -23,7 +23,7 @@ RUN python -c "from faster_whisper import WhisperModel; WhisperModel('base', dev
 COPY worker.py lifecycle.py score_updater.py llm_client.py ./
 COPY l2r/ ./l2r/
 
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser
-ENV PYTHONUNBUFFERED=1
+RUN groupadd -r -g 1000 appgroup && useradd -r -u 1000 -g appgroup -m appuser
+ENV PYTHONUNBUFFERED=1 HF_HOME=/home/appuser/.cache/huggingface
 USER appuser
 CMD ["python", "worker.py"]

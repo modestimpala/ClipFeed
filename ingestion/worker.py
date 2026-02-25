@@ -18,7 +18,10 @@ import base64
 from pathlib import Path
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+try:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+except ImportError:
+    AESGCM = None
 
 import struct
 
@@ -83,6 +86,9 @@ signal.signal(signal.SIGTERM, signal_handler)
 def decrypt_cookie(encoded: str, secret: str) -> str | None:
     """Decrypt a cookie encrypted by the Go API (AES-256-GCM, nonce-prepended, base64).
     Returns None on any failure so the job can proceed without cookies."""
+    if AESGCM is None:
+        log.warning("cryptography package not installed — cannot decrypt cookies")
+        return None
     try:
         key = hashlib.sha256(secret.encode()).digest()
         data = base64.b64decode(encoded)
