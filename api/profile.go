@@ -171,7 +171,7 @@ func (a *App) handleSetCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encrypted, err := encryptCookie(req.CookieStr, a.cfg.JWTSecret)
+	encrypted, err := encryptCookie(req.CookieStr, a.cfg.CookieSecret)
 	if err != nil {
 		log.Printf("cookie encryption failed: %v", err)
 		writeJSON(w, 500, map[string]string{"error": "failed to save cookie"})

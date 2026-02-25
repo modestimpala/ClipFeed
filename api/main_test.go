@@ -36,7 +36,7 @@ func newTestApp(t *testing.T) *App {
 	t.Cleanup(func() { db.Close() })
 	return &App{
 		db:  NewCompatDB(db, DialectSQLite),
-		cfg: Config{JWTSecret: "test-secret", MinioBucket: "test-bucket"},
+		cfg: Config{JWTSecret: "test-secret", CookieSecret: "test-cookie-secret", MinioBucket: "test-bucket"},
 	}
 }
 
@@ -347,7 +347,7 @@ func TestExtractUserID_WrongSecret(t *testing.T) {
 	app := newTestApp(t)
 	token, _ := app.generateToken("user-123")
 
-	app2 := &App{cfg: Config{JWTSecret: "different-secret"}}
+	app2 := &App{cfg: Config{JWTSecret: "different-secret", CookieSecret: "test-cookie-secret"}}
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 

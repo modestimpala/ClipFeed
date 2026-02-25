@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -64,14 +65,29 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
+// clientIP extracts the real client IP for rate limiting.
+// Trusts X-Real-IP (set by our nginx proxy) first, then takes only the
+// first (leftmost) entry from X-Forwarded-For to prevent spoofing via
+// appended headers. Falls back to RemoteAddr.
+func clientIP(r *http.Request) string {
+	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+		return strings.TrimSpace(realIP)
+	}
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		// Only trust the first IP (set by the outermost proxy).
+		if idx := strings.IndexByte(forwarded, ','); idx != -1 {
+			return strings.TrimSpace(forwarded[:idx])
+		}
+		return strings.TrimSpace(forwarded)
+	}
+	return r.RemoteAddr
+}
+
 // rateLimitMiddleware returns HTTP 429 when the per-IP rate is exceeded.
 func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-				ip = forwarded
-			}
+			ip := clientIP(r)
 			if !rl.allow(ip) {
 				w.Header().Set("Retry-After", "60")
 				writeJSON(w, 429, map[string]string{"error": "too many requests"})

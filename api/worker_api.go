@@ -217,15 +217,16 @@ func (a *App) handleWorkerReclaimStale(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		cutoff := fmt.Sprintf("-%d minutes", req.StaleMinutes)
+		staleExpr := a.db.PurgeDatetimeComparison("started_at", cutoff)
 		res, _ := a.db.ExecContext(r.Context(), fmt.Sprintf(`
 			UPDATE jobs
 			SET status = 'queued', run_after = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN ? ELSE error || ' | ' || ? END
 			WHERE status = 'running'
 			  AND started_at IS NOT NULL
-			  AND datetime(started_at) <= datetime('now', ?)
+			  AND %s
 			  AND attempts < max_attempts
-		`, nowExpr), staleMsg, staleMsg, cutoff)
+		`, nowExpr, staleExpr), staleMsg, staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
 			requeuedCount = int(n)
@@ -236,9 +237,9 @@ func (a *App) handleWorkerReclaimStale(w http.ResponseWriter, r *http.Request) {
 			    error = CASE WHEN error IS NULL OR error = '' THEN ? ELSE error || ' | ' || ? END
 			WHERE status = 'running'
 			  AND started_at IS NOT NULL
-			  AND datetime(started_at) <= datetime('now', ?)
+			  AND %s
 			  AND attempts >= max_attempts
-		`, nowExpr), staleMsg, staleMsg, cutoff)
+		`, nowExpr, staleExpr), staleMsg, staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
 			failedCount = int(n)
@@ -333,7 +334,7 @@ func (a *App) handleWorkerGetCookie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	decrypted, err := decryptCookie(encrypted, a.cfg.JWTSecret)
+	decrypted, err := decryptCookie(encrypted, a.cfg.CookieSecret)
 	if err != nil {
 		writeJSON(w, 200, map[string]interface{}{"cookie": nil})
 		return
@@ -398,21 +399,19 @@ func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
 		for _, topicName := range req.Topics {
 			topicID := a.resolveOrCreateTopicTx(r.Context(), conn, topicName)
 			if topicID != "" {
-				conn.ExecContext(r.Context(),
+				if _, err := conn.ExecContext(r.Context(),
 					`INSERT INTO clip_topics (clip_id, topic_id, confidence, source) VALUES (?, ?, 1.0, 'keybert') ON CONFLICT DO NOTHING`,
-					req.ID, topicID)
+					req.ID, topicID); err != nil {
+					return fmt.Errorf("insert clip_topics: %w", err)
+				}
 			}
 		}
 
 		// Index FTS
-		if a.db.IsPostgres() {
-			conn.ExecContext(r.Context(),
-				`INSERT INTO clips_fts(clip_id, title, transcript, platform, channel_name) VALUES (?, ?, ?, ?, ?)`,
-				req.ID, req.Title, truncate(req.Transcript, 2000), req.Platform, req.ChannelName)
-		} else {
-			conn.ExecContext(r.Context(),
-				`INSERT INTO clips_fts(clip_id, title, transcript, platform, channel_name) VALUES (?, ?, ?, ?, ?)`,
-				req.ID, req.Title, truncate(req.Transcript, 2000), req.Platform, req.ChannelName)
+		if _, err := conn.ExecContext(r.Context(),
+			`INSERT INTO clips_fts(clip_id, title, transcript, platform, channel_name) VALUES (?, ?, ?, ?, ?)`,
+			req.ID, req.Title, truncate(req.Transcript, 2000), req.Platform, req.ChannelName); err != nil {
+			return fmt.Errorf("insert clips_fts: %w", err)
 		}
 
 		// Embeddings
@@ -424,10 +423,12 @@ func (a *App) handleWorkerCreateClip(w http.ResponseWriter, r *http.Request) {
 			if req.VisualEmbedding != "" {
 				visEmb, _ = base64.StdEncoding.DecodeString(req.VisualEmbedding)
 			}
-			conn.ExecContext(r.Context(),
+			if _, err := conn.ExecContext(r.Context(),
 				`INSERT INTO clip_embeddings (clip_id, text_embedding, visual_embedding, model_version) VALUES (?, ?, ?, ?)
 				 ON CONFLICT(clip_id) DO UPDATE SET text_embedding = EXCLUDED.text_embedding, visual_embedding = EXCLUDED.visual_embedding, model_version = EXCLUDED.model_version`,
-				req.ID, textEmb, visEmb, req.ModelVersion)
+				req.ID, textEmb, visEmb, req.ModelVersion); err != nil {
+				return fmt.Errorf("insert clip_embeddings: %w", err)
+			}
 		}
 
 		return nil
@@ -474,10 +475,11 @@ func slugify(name string) string {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen]
+	return string(runes[:maxLen])
 }
 
 // --- Topic resolution ---

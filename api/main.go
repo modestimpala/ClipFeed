@@ -46,6 +46,7 @@ type Config struct {
 	MinioBucket    string
 	MinioSSL       bool
 	JWTSecret      string
+	CookieSecret   string
 	AdminUsername  string
 	AdminPassword  string
 	Port           string
@@ -65,6 +66,7 @@ func loadConfig() Config {
 		MinioBucket:    getEnv("MINIO_BUCKET", "clips"),
 		MinioSSL:       getEnv("MINIO_USE_SSL", "false") == "true",
 		JWTSecret:      getEnv("JWT_SECRET", "supersecretkey"),
+		CookieSecret:   getEnv("COOKIE_SECRET", getEnv("JWT_SECRET", "supersecretkey")),
 		AdminUsername:  getEnv("ADMIN_USERNAME", "admin"),
 		AdminPassword:  getEnv("ADMIN_PASSWORD", "changeme_admin_password"),
 		Port:           getEnv("PORT", "8080"),
@@ -250,7 +252,6 @@ func main() {
 	r.Get("/api/clips/{id}", app.handleGetClip)
 	r.Get("/api/clips/{id}/stream", app.handleStreamClip)
 	r.Get("/api/clips/{id}/similar", app.handleSimilarClips)
-	r.Post("/api/clips/{id}/summary", app.handleClipSummary)
 	r.Get("/api/search", app.handleSearch)
 	r.Get("/api/topics", app.handleGetTopics)
 	r.Get("/api/topics/tree", app.handleGetTopicTree)
@@ -264,6 +265,7 @@ func main() {
 
 	r.Group(func(r chi.Router) {
 		r.Use(app.authMiddleware)
+		r.Post("/api/clips/{id}/summary", app.handleClipSummary)
 		r.Post("/api/clips/{id}/interact", app.handleInteraction)
 		r.Post("/api/clips/{id}/save", app.handleSaveClip)
 		r.Delete("/api/clips/{id}/save", app.handleUnsaveClip)
