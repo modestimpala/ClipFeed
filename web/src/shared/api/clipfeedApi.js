@@ -59,6 +59,7 @@ export const api = {
   triggerScoutSource: (id) => request('POST', `/scout/sources/${id}/trigger`),
   getScoutCandidates: (status) => request('GET', `/scout/candidates?status=${encodeURIComponent(status)}`),
   approveCandidate: (id) => request('POST', `/scout/candidates/${id}/approve`),
+  getScoutProfile: () => request('GET', '/scout/profile'),
 
   // Collections
   getCollections: () => request('GET', '/collections'),

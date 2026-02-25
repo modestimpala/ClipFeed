@@ -395,19 +395,37 @@ def evaluate_candidate(
     title: str,
     channel: str,
     top_topics: list,
+    user_profile: str | None = None,
 ) -> float | None:
     """
     Rate relevance 1-10 given user interests.
+    If user_profile is provided, uses personalized scoring with the user's
+    actual interests, favorite channels, and topic preferences.
     Returns None on request/parse failure.
     """
-    logger.info("[LLM] Evaluating candidate: title=%r channel=%r topics=%s",
-                title[:80] if title else "", channel, top_topics[:5] if top_topics else [])
+    logger.info("[LLM] Evaluating candidate: title=%r channel=%r profile=%s",
+                title[:80] if title else "", channel,
+                (user_profile[:80] + "...") if user_profile and len(user_profile) > 80 else user_profile)
     topics_str = ", ".join(str(t) for t in top_topics) if top_topics else "(none)"
-    prompt = (
-        f"Given these user interests: {topics_str}. "
-        f"Rate 1-10 how relevant this video is: '{title}' by '{channel}'. "
-        "Reply with just the number."
-    )
+
+    if user_profile:
+        prompt = (
+            "You are a content recommendation engine. A user has the following interest profile:\n"
+            f"{user_profile}\n\n"
+            f"Rate how likely this user would enjoy the following video on a scale of 1-10:\n"
+            f"Title: '{title}'\n"
+            f"Channel: '{channel}'\n\n"
+            "Consider topic relevance, channel familiarity, and content style alignment. "
+            "A score of 10 means perfect match for this user's tastes, 1 means completely irrelevant. "
+            "Reply with just the number."
+        )
+    else:
+        prompt = (
+            f"Given these user interests: {topics_str}. "
+            f"Rate 1-10 how relevant this video is: '{title}' by '{channel}'. "
+            "Reply with just the number."
+        )
+
     result = generate(prompt)
     if not result:
         logger.warning("[LLM] Candidate evaluation returned empty for title=%r", title[:80] if title else "")
@@ -425,3 +443,85 @@ def evaluate_candidate(
 
     logger.warning("[LLM] Could not parse score from LLM response: %r (title=%r)", result[:100], title[:60] if title else "")
     return None
+
+
+def generate_search_queries(
+    identifier: str,
+    source_type: str,
+    user_profile: str | None = None,
+    existing_queries: list[str] | None = None,
+    count: int = 4,
+) -> list[str]:
+    """
+    Generate varied YouTube search queries that combine the source identifier
+    with user interests. Each call should produce different queries to discover
+    fresh content that the static identifier search would miss.
+
+    Returns a list of search query strings. Falls back to simple variations
+    if LLM is unavailable or fails.
+    """
+    fallbacks = [
+        identifier,
+        f"{identifier} new",
+        f"{identifier} highlights",
+        f"{identifier} best",
+    ]
+
+    if not ENABLE_AI or not is_available():
+        logger.info("[LLM] AI unavailable — using fallback search queries for %r", identifier)
+        return fallbacks[:count]
+
+    existing_str = ""
+    if existing_queries:
+        existing_str = f"\nAvoid repeating these previously used queries: {', '.join(existing_queries[-10:])}\n"
+
+    profile_str = ""
+    if user_profile:
+        profile_str = f"\nUser interest profile: {user_profile}\n"
+
+    prompt = (
+        f"Generate {count} YouTube search queries to find new, fresh content related to '{identifier}' "
+        f"(source type: {source_type}).\n"
+        f"{profile_str}"
+        f"{existing_str}"
+        "The queries should:\n"
+        "- Always include or reference the source identifier\n"
+        "- Vary the angle: recent content, specific sub-topics, compilations, highlights, related creators\n"
+        "- Mix the user's interests with the source to find cross-over content\n"
+        "- Be practical YouTube search queries (not too long)\n"
+        "- Focus on discovering NEW content the user hasn't seen\n\n"
+        f"Return exactly {count} queries as a JSON array of strings. Example:\n"
+        f'["{identifier} latest", "{identifier} funny moments"]\n'
+        "Reply with only the JSON array."
+    )
+
+    result = generate(prompt, max_tokens=200)
+    if not result:
+        logger.warning("[LLM] Search query generation returned empty for %r — using fallbacks", identifier)
+        return fallbacks[:count]
+
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, list) and all(isinstance(q, str) for q in parsed):
+            queries = [q.strip() for q in parsed if q.strip()]
+            if queries:
+                logger.info("[LLM] Generated %d search queries for %r: %s",
+                            len(queries), identifier, queries)
+                return queries[:count]
+    except json.JSONDecodeError:
+        # Try extracting JSON from markdown response
+        match = re.search(r"\[[\s\S]*?\]", result)
+        if match:
+            try:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, list):
+                    queries = [str(q).strip() for q in parsed if q]
+                    if queries:
+                        logger.info("[LLM] Generated %d search queries (extracted) for %r: %s",
+                                    len(queries), identifier, queries)
+                        return queries[:count]
+            except json.JSONDecodeError:
+                pass
+
+    logger.warning("[LLM] Could not parse search queries from response: %r — using fallbacks", result[:200])
+    return fallbacks[:count]

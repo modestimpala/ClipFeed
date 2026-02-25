@@ -202,6 +202,124 @@ func (a *App) handleDeleteScoutSource(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
+// handleGetScoutProfile returns the user's interest profile that Scout uses for
+// personalized content discovery. This includes top topics (from interactions +
+// explicit weights), favorite channels, and interaction stats.
+func (a *App) handleGetScoutProfile(w http.ResponseWriter, r *http.Request) {
+	userID := r.Context().Value(userIDKey).(string)
+
+	// 1. Top topics from interactions (liked/saved clips)
+	topicRows, err := a.db.QueryContext(r.Context(), `
+		SELECT t.name, COUNT(*) AS cnt,
+		       COALESCE(uta.weight, 1.0) AS user_weight
+		FROM interactions i
+		JOIN clips c ON i.clip_id = c.id
+		JOIN clip_topics ct ON ct.clip_id = c.id
+		JOIN topics t ON ct.topic_id = t.id
+		LEFT JOIN user_topic_affinities uta ON uta.topic_id = t.id AND uta.user_id = i.user_id
+		WHERE i.user_id = ?
+		  AND i.action IN ('like', 'save', 'share')
+		GROUP BY t.id
+		ORDER BY (cnt * COALESCE(uta.weight, 1.0)) DESC
+		LIMIT 15
+	`, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		return
+	}
+	defer topicRows.Close()
+
+	var topics []map[string]interface{}
+	for topicRows.Next() {
+		var name string
+		var cnt int
+		var weight float64
+		if err := topicRows.Scan(&name, &cnt, &weight); err != nil {
+			continue
+		}
+		topics = append(topics, map[string]interface{}{
+			"name": name, "interaction_count": cnt, "weight": weight,
+		})
+	}
+	if topics == nil {
+		topics = make([]map[string]interface{}, 0)
+	}
+
+	// 2. Explicit topic weights from user preferences
+	var topicWeightsJSON string
+	a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(topic_weights, '{}') FROM user_preferences WHERE user_id = ?`,
+		userID).Scan(&topicWeightsJSON)
+
+	var explicitWeights map[string]interface{}
+	json.Unmarshal([]byte(topicWeightsJSON), &explicitWeights)
+	if explicitWeights == nil {
+		explicitWeights = make(map[string]interface{})
+	}
+
+	// 3. Favorite channels (most interacted)
+	channelRows, err := a.db.QueryContext(r.Context(), `
+		SELECT s.channel_name, COUNT(*) AS cnt
+		FROM interactions i
+		JOIN clips c ON i.clip_id = c.id
+		JOIN sources s ON c.source_id = s.id
+		WHERE i.user_id = ?
+		  AND i.action IN ('like', 'save', 'share', 'complete')
+		  AND s.channel_name IS NOT NULL AND TRIM(s.channel_name) <> ''
+		GROUP BY s.channel_name
+		ORDER BY cnt DESC
+		LIMIT 10
+	`, userID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "query failed"})
+		return
+	}
+	defer channelRows.Close()
+
+	var channels []map[string]interface{}
+	for channelRows.Next() {
+		var name string
+		var cnt int
+		if err := channelRows.Scan(&name, &cnt); err != nil {
+			continue
+		}
+		channels = append(channels, map[string]interface{}{
+			"name": name, "interaction_count": cnt,
+		})
+	}
+	if channels == nil {
+		channels = make([]map[string]interface{}, 0)
+	}
+
+	// 4. Interaction summary
+	var totalLikes, totalSaves, totalViews int
+	a.db.QueryRowContext(r.Context(), `
+		SELECT
+			COALESCE(SUM(CASE WHEN action = 'like' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN action = 'save' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN action = 'view' THEN 1 ELSE 0 END), 0)
+		FROM interactions WHERE user_id = ?
+	`, userID).Scan(&totalLikes, &totalSaves, &totalViews)
+
+	// 5. User preferences relevant to scout
+	var scoutThreshold float64
+	var scoutAutoIngest int
+	a.db.QueryRowContext(r.Context(),
+		`SELECT COALESCE(scout_threshold, 6.0), COALESCE(scout_auto_ingest, 1) FROM user_preferences WHERE user_id = ?`,
+		userID).Scan(&scoutThreshold, &scoutAutoIngest)
+
+	writeJSON(w, 200, map[string]interface{}{
+		"topics":           topics,
+		"explicit_weights": explicitWeights,
+		"channels":         channels,
+		"stats": map[string]int{
+			"likes": totalLikes, "saves": totalSaves, "views": totalViews,
+		},
+		"scout_threshold":    scoutThreshold,
+		"scout_auto_ingest":  scoutAutoIngest == 1,
+	})
+}
+
 func (a *App) handleTriggerScoutSource(w http.ResponseWriter, r *http.Request) {
 	userID := r.Context().Value(userIDKey).(string)
 	sourceID := chi.URLParam(r, "id")

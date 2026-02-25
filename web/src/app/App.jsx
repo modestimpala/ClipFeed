@@ -24,6 +24,17 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePop);
   }, []);
 
+  // Validate token on mount — clear stale/invalid tokens (e.g. admin-only JWTs)
+  useEffect(() => {
+    if (!api.getToken()) return;
+    api.getProfile().catch((err) => {
+      if (err?.status === 404 || err?.status === 401) {
+        api.clearToken();
+        setAuthed(false);
+      }
+    });
+  }, []);
+
   function navigate(path) {
     window.history.pushState({}, '', path);
     setRoute(path);
