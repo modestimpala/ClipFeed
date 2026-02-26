@@ -8,6 +8,25 @@ Self-hosted short-form video platform with a transparent, user-controllable algo
   <img src="./media/img/screenshot3.JPG" width="25%" />
 </p>
 
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Stack](#stack)
+- [Quick Start](#quick-start)
+- [Content Pipeline](#content-pipeline)
+- [Algorithm](#algorithm)
+- [Ingestion Limits vs User Preferences](#ingestion-limits-vs-user-preferences)
+- [Backup & Restore](#backup--restore)
+- [Storage Lifecycle](#storage-lifecycle)
+- [Alternate Database (Postgres)](#alternate-database-postgres)
+- [Frontend Configuration](#frontend-configuration)
+- [PWA Installation](#pwa-installation)
+- [Admin Dashboard](#admin-dashboard)
+- [API Endpoints](#api-endpoints)
+- [Development](#development)
+- [LLM Provider Configuration](#llm-provider-configuration)
+- [Roadmap](#roadmap)
+
 ## Architecture
 
 ```
@@ -176,6 +195,22 @@ The frontend is a Progressive Web App. On mobile:
 
 No app store needed.
 
+## Admin Dashboard
+
+ClipFeed includes a hidden system status dashboard for monitoring and maintenance.
+
+- **Access**: Navigate to `/admin` in your browser.
+- **Authentication**: Uses separate credentials defined in your `.env` file (`ADMIN_USERNAME` and `ADMIN_PASSWORD`).
+- **Features**:
+    - **System Health**: Real-time monitoring of memory usage, goroutines, and Go runtime stats.
+    - **Queue Management**: Monitor the ingestion pipeline (running, queued, failed, and rejected jobs).
+    - **Content Stats**: Track the total number of ready clips, processing backlog, and storage usage (GB).
+    - **Database Stats**: View total users, aggregate interactions, and database file size.
+    - **AI/LLM Monitoring**: Detailed stats on Scout evaluations, approval rates, and clip summaries.
+    - **LLM Logs**: View raw prompts and responses for every LLM interaction to debug discovery and summarization.
+    - **Failure Analysis**: Review error messages for failed ingestion jobs and clear the queue.
+    - **Activity Charts**: Visual 7-day history of clip ingestion and user engagement.
+
 ## API Endpoints
 
 ### Public
@@ -240,6 +275,12 @@ No app store needed.
 - `GET    /api/scout/candidates` - List discovered candidates
 - `POST   /api/scout/candidates/:id/approve` - Approve candidate for ingestion
 - `GET    /api/scout/profile` - User's interest profile (what Scout optimizes for)
+
+### Admin (admin auth required)
+- `POST /api/admin/login` - Admin login (returns distinct admin JWT)
+- `GET  /api/admin/status` - System status, database, and queue metrics
+- `GET  /api/admin/llm_logs` - Recent LLM prompts and responses
+- `POST /api/admin/clear-failed` - Purge failed/rejected jobs from the queue
 
 ## Development
 
