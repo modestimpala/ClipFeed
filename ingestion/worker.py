@@ -133,6 +133,8 @@ class Worker:
         self.api = WorkerAPIClient(WORKER_API_URL, WORKER_SECRET)
         log.info("Worker connecting to API at %s", WORKER_API_URL)
         self.api.wait_for_api()
+        import llm_client as _llm
+        _llm.set_api_client(self.api)
 
         self.minio = Minio(
             MINIO_ENDPOINT,

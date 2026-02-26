@@ -498,6 +498,33 @@ func (h *Handler) HandleScoreUpdate(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, 200, map[string]interface{}{"updated": count})
 }
 
+// HandleCreateLLMLog inserts a row into llm_logs.
+func (h *Handler) HandleCreateLLMLog(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		System     string `json:"system"`
+		Model      string `json:"model"`
+		Prompt     string `json:"prompt"`
+		Response   string `json:"response"`
+		Error      string `json:"error"`
+		DurationMs int    `json:"duration_ms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httputil.WriteJSON(w, 400, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	_, err := h.DB.ExecContext(r.Context(),
+		`INSERT INTO llm_logs (system, model, prompt, response, error, duration_ms) VALUES (?, ?, ?, ?, ?, ?)`,
+		req.System, req.Model, req.Prompt, req.Response, req.Error, req.DurationMs)
+	if err != nil {
+		log.Printf("worker create llm_log failed: %v", err)
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to insert log"})
+		return
+	}
+
+	httputil.WriteJSON(w, 201, map[string]string{"status": "ok"})
+}
+
 // Slugify converts a topic name to a URL-safe slug.
 func Slugify(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))

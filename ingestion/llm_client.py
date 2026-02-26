@@ -14,16 +14,22 @@ import requests
 
 logger = logging.getLogger("llm_client")
 
-# Master toggle -- when false, all LLM calls are skipped instantly.
-ENABLE_AI = os.getenv("ENABLE_AI", "true").lower() == "true"
-
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").strip().lower()
 LLM_URL = os.getenv("LLM_URL", "http://llm:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").rstrip("/")
 LLM_MODEL = os.getenv("LLM_MODEL", "").strip() or OLLAMA_MODEL
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01").strip() or "2023-06-01"
+
+
+def _ai_enabled() -> bool:
+    """AI is enabled when a provider is configured (and API key present for cloud providers)."""
+    if not LLM_PROVIDER:
+        return False
+    if LLM_PROVIDER == "ollama":
+        return True
+    return bool(LLM_API_KEY)
 
 # Timeouts
 AVAILABILITY_TIMEOUT = 3
@@ -32,13 +38,13 @@ PULL_TIMEOUT = int(os.getenv("LLM_PULL_TIMEOUT", "900"))
 
 # Log configuration at import time
 logger.info(
-    "[LLM] Config loaded: ENABLE_AI=%s provider=%s model=%s base_url=%s",
-    ENABLE_AI, LLM_PROVIDER, LLM_MODEL, LLM_BASE_URL or LLM_URL,
+    "[LLM] Config loaded: ai_enabled=%s provider=%s model=%s base_url=%s",
+    _ai_enabled(), LLM_PROVIDER or "(none)", LLM_MODEL, LLM_BASE_URL or LLM_URL,
 )
 
 
 def _provider() -> str:
-    return (LLM_PROVIDER or "ollama").lower()
+    return LLM_PROVIDER or "ollama"
 
 
 def _model(model: str | None = None) -> str:
@@ -65,6 +71,16 @@ def _anthropic_headers() -> dict:
         "x-api-key": key,
         "anthropic-version": ANTHROPIC_VERSION,
     }
+
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown code fences (```json ... ```) from LLM responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```\w*\n?", "", text)
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
 
 
 def _extract_text_content(content) -> str:
@@ -141,8 +157,8 @@ def _extract_completion_text(response) -> str:
 
 def is_available() -> bool:
     """Check if configured LLM provider is reachable."""
-    if not ENABLE_AI:
-        logger.info("[LLM] AI disabled (ENABLE_AI=false), skipping availability check")
+    if not _ai_enabled():
+        logger.info("[LLM] AI not configured (no provider/key), skipping availability check")
         return False
 
     provider = _provider()
@@ -262,11 +278,33 @@ def ensure_model(model: str | None = None, auto_pull: bool = True) -> bool:
         return False
 
 
-import threading
+_api_client = None
 
+def _get_api_client():
+    """Lazily get the WorkerAPIClient singleton (set by worker at startup)."""
+    global _api_client
+    return _api_client
+
+def set_api_client(client):
+    """Called by the worker to inject the shared API client for LLM logging."""
+    global _api_client
+    _api_client = client
+
+import threading
 _tl = threading.local()
 
 def _log_to_db(provider: str, model: str, prompt: str, response: str, error: str, duration_ms: int):
+    # Prefer HTTP API client (injected by worker)
+    client = _get_api_client()
+    if client is not None:
+        try:
+            client.create_llm_log(provider, model, prompt, response, error, duration_ms)
+            return
+        except Exception as e:
+            logger.warning("Failed to log LLM call via API: %s", e)
+            return
+
+    # Fallback: direct SQLite (for scout which mounts /data)
     db_path = os.getenv("DB_PATH", "/data/clipfeed.db")
     if not os.path.exists(db_path):
         return
@@ -280,7 +318,7 @@ def _log_to_db(provider: str, model: str, prompt: str, response: str, error: str
         )
         _tl.conn.commit()
     except Exception as e:
-        logger.warning(f"Failed to log to llm_logs: {e}")
+        logger.warning("Failed to log LLM call to SQLite: %s", e)
 
 def generate(
     prompt: str,
@@ -341,7 +379,7 @@ def generate_title(transcript: str, source_title: str = "") -> str:
         f"Source: {source_title}\n"
         f"Transcript: {excerpt}"
     )
-    result = generate(prompt)
+    result = generate(prompt, max_tokens=64)
     if not result:
         logger.warning("[LLM] Title generation returned empty result")
         return ""
@@ -366,26 +404,27 @@ def refine_topics(transcript: str, keybert_topics: list) -> list:
         "Respond as a JSON array of objects with 'topic' and 'parent' keys.\n\n"
         f"Transcript: {excerpt}"
     )
-    result = generate(prompt)
+    result = generate(prompt, max_tokens=512)
     if not result:
         logger.warning("[LLM] Topic refinement returned empty -- keeping original topics: %s", keybert_topics)
         return list(keybert_topics)
 
+    cleaned = _strip_code_fences(result)
     try:
-        parsed = json.loads(result)
+        parsed = json.loads(cleaned)
         if isinstance(parsed, list):
             refined = [str(item.get("topic", item)) for item in parsed if item]
             logger.info("[LLM] Topics refined: %s -> %s", keybert_topics, refined)
             return refined
     except json.JSONDecodeError:
-        # Try to extract JSON from markdown or mixed response
-        match = re.search(r"\[[\s\S]*?\]", result)
+        # Try to extract JSON array from mixed response (greedy to handle nested brackets)
+        match = re.search(r"\[[\s\S]*\]", cleaned)
         if match:
             try:
                 parsed = json.loads(match.group(0))
                 if isinstance(parsed, list):
                     refined = [str(item.get("topic", item)) for item in parsed if item]
-                    logger.info("[LLM] Topics refined (extracted from markdown): %s -> %s", keybert_topics, refined)
+                    logger.info("[LLM] Topics refined (extracted from text): %s -> %s", keybert_topics, refined)
                     return refined
             except json.JSONDecodeError:
                 pass
@@ -471,7 +510,7 @@ def generate_search_queries(
         f"{identifier} best",
     ]
 
-    if not ENABLE_AI or not is_available():
+    if not _ai_enabled() or not is_available():
         logger.info("[LLM] AI unavailable -- using fallback search queries for %r", identifier)
         return fallbacks[:count]
 
@@ -504,8 +543,9 @@ def generate_search_queries(
         logger.warning("[LLM] Search query generation returned empty for %r -- using fallbacks", identifier)
         return fallbacks[:count]
 
+    cleaned = _strip_code_fences(result)
     try:
-        parsed = json.loads(result)
+        parsed = json.loads(cleaned)
         if isinstance(parsed, list) and all(isinstance(q, str) for q in parsed):
             queries = [q.strip() for q in parsed if q.strip()]
             if queries:
@@ -513,8 +553,8 @@ def generate_search_queries(
                             len(queries), identifier, queries)
                 return queries[:count]
     except json.JSONDecodeError:
-        # Try extracting JSON from markdown response
-        match = re.search(r"\[[\s\S]*?\]", result)
+        # Try extracting JSON array from mixed response
+        match = re.search(r"\[[\s\S]*\]", cleaned)
         if match:
             try:
                 parsed = json.loads(match.group(0))

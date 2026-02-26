@@ -64,13 +64,12 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-changeme_admin_password}
       WORKER_SECRET: ${WORKER_SECRET:-}
       ALLOW_INSECURE_DEFAULTS: ${ALLOW_INSECURE_DEFAULTS:-false}
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_URL: ${LLM_URL:-http://llm:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
-      ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
       - db_data:/data
     read_only: true
@@ -123,13 +122,12 @@ services:
       WHISPER_THREADS: ${WHISPER_THREADS:-4}
       CLIP_TTL_DAYS: ${CLIP_TTL_DAYS:-30}
       JOB_STALE_MINUTES: ${JOB_STALE_MINUTES:-120}
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_URL: ${LLM_URL:-http://llm:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
-      ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
       - worker_tmp:/tmp/clipfeed
     cap_drop:
@@ -266,7 +264,7 @@ services:
       retries: 3
     environment:
       DB_PATH: /data/clipfeed.db
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}

@@ -269,7 +269,9 @@ func main() {
 		httputil.WriteJSON(w, 200, map[string]string{"status": "ok"})
 	})
 	r.Get("/api/config", func(w http.ResponseWriter, r *http.Request) {
-		aiEnabled := os.Getenv("ENABLE_AI") == "true"
+		provider := os.Getenv("LLM_PROVIDER")
+		apiKey := os.Getenv("LLM_API_KEY")
+		aiEnabled := provider != "" && (provider == "ollama" || apiKey != "")
 		w.Header().Set("Cache-Control", "public, max-age=300")
 		httputil.WriteJSON(w, 200, map[string]interface{}{"ai_enabled": aiEnabled})
 	})
@@ -355,6 +357,7 @@ func main() {
 		r.Post("/api/internal/clips", workerH.HandleCreateClip)
 		r.Post("/api/internal/topics/resolve", workerH.HandleResolveTopic)
 		r.Post("/api/internal/scores/update", workerH.HandleScoreUpdate)
+		r.Post("/api/internal/llm-logs", workerH.HandleCreateLLMLog)
 	})
 
 	// --- Start server ---

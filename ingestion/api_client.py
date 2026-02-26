@@ -178,6 +178,31 @@ class WorkerAPIClient:
         resp.raise_for_status()
         return resp.json()["id"]
 
+    # --- LLM log ---
+
+    def create_llm_log(
+        self,
+        system: str,
+        model: str,
+        prompt: str,
+        response: str,
+        error: str,
+        duration_ms: int,
+    ):
+        """Log an LLM call to the database via the API."""
+        try:
+            resp = self._post("/llm-logs", data={
+                "system": system,
+                "model": model,
+                "prompt": prompt,
+                "response": response,
+                "error": error,
+                "duration_ms": duration_ms,
+            })
+            resp.raise_for_status()
+        except Exception as e:
+            log.warning("Failed to log LLM call: %s", e)
+
     # --- Health check ---
 
     def health_check(self) -> bool:
