@@ -3,10 +3,12 @@ import { api } from '../../../shared/api/clipfeedApi';
 import { Icons } from '../../../shared/ui/icons';
 import { Tabs } from '../../../shared/ui/Tabs';
 import { ConfirmDialog } from '../../../shared/ui/ConfirmDialog';
+import { ClipPlayerModal } from '../../../shared/ui/ClipPlayerModal';
 
 function SavedClipsList() {
   const [clips, setClips] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [playingClip, setPlayingClip] = useState(null);
 
   useEffect(() => {
     api.getSaved()
@@ -37,7 +39,7 @@ function SavedClipsList() {
   return (
     <div className="saved-grid">
       {clips.map((clip) => (
-        <div key={clip.id} className="saved-card">
+        <div key={clip.id} className="saved-card" style={{ cursor: 'pointer' }} onClick={() => setPlayingClip(clip)}>
           <div className="saved-thumb">
             {clip.thumbnail_url && (
               <img src={clip.thumbnail_url} alt={clip.title} loading="lazy" />
@@ -58,7 +60,7 @@ function SavedClipsList() {
               </div>
             )}
           </div>
-          <div className="saved-actions">
+          <div className="saved-actions" onClick={(e) => e.stopPropagation()}>
             {clip.source_url && (
               <button className="saved-source-btn" onClick={() => window.open(clip.source_url, '_blank', 'noopener,noreferrer')} title="Open source">
                 <Icons.ExternalLink />
@@ -70,6 +72,7 @@ function SavedClipsList() {
           </div>
         </div>
       ))}
+      {playingClip && <ClipPlayerModal clip={playingClip} onClose={() => setPlayingClip(null)} />}
     </div>
   );
 }
@@ -77,6 +80,7 @@ function SavedClipsList() {
 function CollectionDetail({ collection, onBack }) {
   const [clips, setClips] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [playingClip, setPlayingClip] = useState(null);
 
   useEffect(() => {
     api.getCollectionClips(collection.id)
@@ -114,7 +118,7 @@ function CollectionDetail({ collection, onBack }) {
       {!loading && clips.length > 0 && (
         <div className="saved-grid">
           {clips.map((clip) => (
-            <div key={clip.id} className="saved-card">
+            <div key={clip.id} className="saved-card" style={{ cursor: 'pointer' }} onClick={() => setPlayingClip(clip)}>
               <div className="saved-thumb">
                 {clip.thumbnail_url && (
                   <img src={clip.thumbnail_url} alt={clip.title} loading="lazy" />
@@ -128,7 +132,7 @@ function CollectionDetail({ collection, onBack }) {
                   {clip.channel_name && <span className="saved-channel">{clip.channel_name}</span>}
                 </div>
               </div>
-              <div className="saved-actions">
+              <div className="saved-actions" onClick={(e) => e.stopPropagation()}>
                 <button className="saved-remove" onClick={() => handleRemove(clip.id)} title="Remove from collection">
                   <Icons.X />
                 </button>
@@ -137,6 +141,7 @@ function CollectionDetail({ collection, onBack }) {
           ))}
         </div>
       )}
+      {playingClip && <ClipPlayerModal clip={playingClip} onClose={() => setPlayingClip(null)} />}
     </>
   );
 }
