@@ -154,8 +154,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("failed to open database: %v", err)
 		}
-		rawDB.SetMaxOpenConns(4)
-		rawDB.SetMaxIdleConns(4)
+		rawDB.SetMaxOpenConns(1)
+		rawDB.SetMaxIdleConns(1)
 		rawDB.SetConnMaxLifetime(0)
 
 		for _, pragma := range []string{
