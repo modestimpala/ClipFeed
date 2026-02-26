@@ -14,3 +14,8 @@ html, body, #root {
   font-family: var(--font);
   -webkit-font-smoothing: antialiased;
 }
+
+/* Prevent iOS auto-zoom on input focus (triggered when font-size < 16px) */
+input, textarea, select {
+  font-size: max(16px, 1em);
+}
