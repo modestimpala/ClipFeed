@@ -124,15 +124,37 @@ def _litellm_model(model: str | None = None) -> str:
     return f"openai/{name}"
 
 
+def _is_gemini3_model(model_name: str) -> bool:
+    """Return True for Gemini 3+ models regardless of provider prefix."""
+    name = model_name.lower()
+    for prefix in ("openai/", "gemini/", "anthropic/", "ollama/"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+    return name.startswith("gemini-3")
+
+
 def _litellm_params(model: str, max_tokens: int) -> dict:
-    # Gemini models (especially Gemini 3+) require temperature=1.0; lower values
-    # cause NotFoundError / degraded reasoning on those model versions.
-    temperature = 1.0 if _provider() == "gemini" else 0.2
+    litellm_model = _litellm_model(model)
+    gemini3 = _is_gemini3_model(litellm_model)
+
+    # Gemini 3+ models require temperature=1.0 regardless of how they are routed
+    # (gemini/ or openai-compatible endpoint). Lower values cause output truncation.
+    # For all other providers/models keep 0.2 for more deterministic outputs.
+    temperature = 1.0 if (gemini3 or _provider() == "gemini") else 0.2
+
     params = {
-        "model": _litellm_model(model),
+        "model": litellm_model,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+
+    # Gemini 3 always runs thinking; reasoning_effort="none" maps to thinking_level="low"
+    # (the minimum possible), preventing thinking tokens from consuming the output budget.
+    # Only send this when using the native gemini/ provider -- the openai-compat endpoint
+    # does not understand reasoning_effort and will raise UnsupportedParamsError.
+    if gemini3 and _provider() == "gemini":
+        params["reasoning_effort"] = "none"
 
     if LLM_API_KEY:
         params["api_key"] = LLM_API_KEY
@@ -180,6 +202,14 @@ def is_available() -> bool:
     provider = _provider()
     base = _base_url()
     logger.info("[LLM] Checking availability: provider=%s base_url=%s", provider, base)
+
+    # For cloud providers where LiteLLM manages the endpoint internally (gemini, and
+    # openai/anthropic when no custom base URL is set), skip the HTTP pre-check —
+    # there is no local endpoint to probe. Trust that the API key is present.
+    if provider == "gemini" or (provider in ("openai", "anthropic") and not base):
+        logger.info("[LLM] Provider %s: skipping HTTP check (managed endpoint), key present", provider)
+        return True
+
     try:
         if provider == "ollama":
             url = f"{base}/api/tags"
