@@ -1,8 +1,12 @@
 FROM golang:1.24-alpine AS builder
 WORKDIR /src
 COPY go.mod ./
-RUN GONOSUMDB=* GOFLAGS=-mod=mod go mod download
+# go.sum may not exist on a fresh clone; create an empty one so go mod download works
+RUN touch go.sum
+RUN GONOSUMDB=* go mod download
 COPY . .
+# Regenerate go.sum in case it was missing or incomplete
+RUN GONOSUMDB=* go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app/server .
 
 FROM alpine:3.19
