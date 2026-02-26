@@ -22,6 +22,19 @@ LLM_MODEL = os.getenv("LLM_MODEL", "").strip() or OLLAMA_MODEL
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01").strip() or "2023-06-01"
 
+# LiteLLM reads provider-specific env vars (GEMINI_API_KEY, ANTHROPIC_API_KEY,
+# OPENAI_API_KEY) rather than the generic api_key kwarg for auth validation.
+# Mirror LLM_API_KEY into the appropriate env var so LiteLLM finds it.
+if LLM_API_KEY:
+    _provider_key_map = {
+        "gemini": "GEMINI_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+    }
+    _env_key = _provider_key_map.get(LLM_PROVIDER)
+    if _env_key and not os.environ.get(_env_key):
+        os.environ[_env_key] = LLM_API_KEY
+
 
 def _ai_enabled() -> bool:
     """AI is enabled when a provider is configured (and API key present for cloud providers)."""
@@ -112,10 +125,13 @@ def _litellm_model(model: str | None = None) -> str:
 
 
 def _litellm_params(model: str, max_tokens: int) -> dict:
+    # Gemini models (especially Gemini 3+) require temperature=1.0; lower values
+    # cause NotFoundError / degraded reasoning on those model versions.
+    temperature = 1.0 if _provider() == "gemini" else 0.2
     params = {
         "model": _litellm_model(model),
         "max_tokens": max_tokens,
-        "temperature": 0.2,
+        "temperature": temperature,
     }
 
     if LLM_API_KEY:
@@ -538,7 +554,7 @@ def generate_search_queries(
         "Reply with only the JSON array."
     )
 
-    result = generate(prompt, max_tokens=200)
+    result = generate(prompt, max_tokens=512)
     if not result:
         logger.warning("[LLM] Search query generation returned empty for %r -- using fallbacks", identifier)
         return fallbacks[:count]
