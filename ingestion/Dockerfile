@@ -9,12 +9,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install -r requirements.txt
 
-# CUDA libraries for GPU inference (~700 MB); skipped for CPU-only builds
-RUN if [ "$ENABLE_GPU" = "true" ]; then \
-    pip install --no-cache-dir nvidia-cublas-cu12 nvidia-cudnn-cu12; \
+# CPU-only builds use the PyTorch CPU index (~300 MB vs ~2.4 GB for CUDA wheels)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "$ENABLE_GPU" = "true" ]; then \
+        pip install -r requirements.txt && \
+        pip install --no-cache-dir nvidia-cublas-cu12 nvidia-cudnn-cu12; \
+    else \
+        pip install -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu; \
     fi
 
 # Bake base whisper model into image (avoids cold-start download)
