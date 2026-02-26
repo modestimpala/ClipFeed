@@ -136,6 +136,26 @@ func (h *Handler) HandleUpdateJob(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJSON(w, 200, map[string]string{"status": "updated"})
 }
 
+// HandleHeartbeat updates the heartbeat_at timestamp for a running job,
+// resetting the staleness clock so long-running jobs are not falsely reclaimed.
+func (h *Handler) HandleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "id")
+	nowExpr := h.DB.NowUTC()
+	res, err := h.DB.ExecContext(r.Context(), fmt.Sprintf(`
+		UPDATE jobs SET heartbeat_at = %s WHERE id = ? AND status = 'running'
+	`, nowExpr), jobID)
+	if err != nil {
+		httputil.WriteJSON(w, 500, map[string]string{"error": "failed to update heartbeat"})
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		httputil.WriteJSON(w, 404, map[string]string{"error": "job not found or not running"})
+		return
+	}
+	httputil.WriteJSON(w, 200, map[string]string{"status": "ok"})
+}
+
 // HandleGetJob returns a job's status and attempt info.
 func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	jobID := chi.URLParam(r, "id")
@@ -173,7 +193,7 @@ func (h *Handler) HandleReclaimStale(w http.ResponseWriter, r *http.Request) {
 			UPDATE jobs SET status = 'queued', run_after = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN $1 ELSE error || ' | ' || $1 END
 			WHERE status = 'running' AND started_at IS NOT NULL
-			  AND started_at::timestamptz <= %s AND attempts < max_attempts
+			  AND COALESCE(heartbeat_at, started_at)::timestamptz <= %s AND attempts < max_attempts
 		`, nowExpr, cutoffExpr), staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
@@ -183,7 +203,7 @@ func (h *Handler) HandleReclaimStale(w http.ResponseWriter, r *http.Request) {
 			UPDATE jobs SET status = 'failed', completed_at = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN $1 ELSE error || ' | ' || $1 END
 			WHERE status = 'running' AND started_at IS NOT NULL
-			  AND started_at::timestamptz <= %s AND attempts >= max_attempts
+			  AND COALESCE(heartbeat_at, started_at)::timestamptz <= %s AND attempts >= max_attempts
 		`, nowExpr, cutoffExpr), staleMsg)
 		if res != nil {
 			n, _ := res.RowsAffected()
@@ -191,7 +211,7 @@ func (h *Handler) HandleReclaimStale(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		cutoff := fmt.Sprintf("-%d minutes", req.StaleMinutes)
-		staleExpr := h.DB.PurgeDatetimeComparison("started_at", cutoff)
+		staleExpr := h.DB.PurgeDatetimeComparison("COALESCE(heartbeat_at, started_at)", cutoff)
 		res, _ := h.DB.ExecContext(r.Context(), fmt.Sprintf(`
 			UPDATE jobs SET status = 'queued', run_after = %s,
 			    error = CASE WHEN error IS NULL OR error = '' THEN ? ELSE error || ' | ' || ? END

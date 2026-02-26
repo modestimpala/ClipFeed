@@ -64,6 +64,7 @@ SILENCE_MIN_DURATION = 0.5
 # Retry parameters
 RETRY_BASE_DELAY = 30  # seconds; doubles each attempt (30s, 60s, 120s, …)
 JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "15"))
+HEARTBEAT_INTERVAL = 30  # seconds between heartbeat pings for running jobs
 
 shutdown = False
 
@@ -175,8 +176,10 @@ class Worker:
 
     def run(self):
         log.info(f"Worker started (max_concurrent={MAX_CONCURRENT})")
-        inflight = set()
+        # Maps Future -> job_id so we can send heartbeats for running jobs.
+        inflight: dict = {}
         last_reclaim_at = 0.0
+        last_heartbeat_at = 0.0
 
         with ThreadPoolExecutor(max_workers=MAX_CONCURRENT) as pool:
             while not shutdown:
@@ -184,13 +187,21 @@ class Worker:
                 try:
                     done = [f for f in list(inflight) if f.done()]
                     for fut in done:
-                        inflight.discard(fut)
+                        inflight.pop(fut, None)
                         try:
                             fut.result()
                         except Exception as e:
                             log.error(f"Background job crashed: {e}")
 
                     now = time.time()
+
+                    # Send heartbeats for all currently running jobs so the
+                    # staleness watchdog does not reclaim them mid-processing.
+                    if inflight and now - last_heartbeat_at >= HEARTBEAT_INTERVAL:
+                        for job_id in list(inflight.values()):
+                            self.api.heartbeat_job(job_id)
+                        last_heartbeat_at = now
+
                     if now-last_reclaim_at >= 60:
                         requeued, failed = self._reclaim_stale_running_jobs()
                         if requeued or failed:
@@ -212,7 +223,7 @@ class Worker:
                     payload = json.loads(row["payload"])
                     log.info(f"Claimed job {job_id}")
                     fut = pool.submit(self.process_job, job_id, payload)
-                    inflight.add(fut)
+                    inflight[fut] = job_id
                 except Exception as e:
                     log.error(f"Job pop failed: {e}")
                     time.sleep(5)

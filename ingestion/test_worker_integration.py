@@ -274,5 +274,26 @@ class TestDecryptCookieIntegration(unittest.TestCase):
         self.assertIsNone(result)
 
 
+# ---------------------------------------------------------------------------
+# Heartbeat tests
+# ---------------------------------------------------------------------------
+
+class TestHeartbeat(unittest.TestCase):
+    """heartbeat_job delegates to the API client without raising."""
+
+    def test_heartbeat_calls_api(self):
+        w = _make_worker()
+        w.api.heartbeat_job.return_value = True
+        result = w.api.heartbeat_job("job-123")
+        self.assertTrue(result)
+        w.api.heartbeat_job.assert_called_once_with("job-123")
+
+    def test_heartbeat_returns_false_on_failure(self):
+        w = _make_worker()
+        w.api.heartbeat_job.return_value = False
+        result = w.api.heartbeat_job("job-999")
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()

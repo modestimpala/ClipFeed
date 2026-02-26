@@ -351,6 +351,7 @@ func main() {
 		r.Post("/api/internal/jobs/claim", workerH.HandleClaimJob)
 		r.Put("/api/internal/jobs/{id}", workerH.HandleUpdateJob)
 		r.Get("/api/internal/jobs/{id}", workerH.HandleGetJob)
+		r.Post("/api/internal/jobs/{id}/heartbeat", workerH.HandleHeartbeat)
 		r.Post("/api/internal/jobs/reclaim", workerH.HandleReclaimStale)
 		r.Put("/api/internal/sources/{id}", workerH.HandleUpdateSource)
 		r.Get("/api/internal/sources/{id}/cookie", workerH.HandleGetCookie)

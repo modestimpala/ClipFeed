@@ -93,6 +93,15 @@ class WorkerAPIClient:
         resp.raise_for_status()
         return resp.json()
 
+    def heartbeat_job(self, job_id: str) -> bool:
+        """Ping the heartbeat endpoint for a running job to reset the staleness clock.
+        Returns True on success, False if the job is no longer running (e.g. cancelled)."""
+        try:
+            resp = self._post(f"/jobs/{job_id}/heartbeat")
+            return resp.status_code == 200
+        except Exception:
+            return False
+
     def reclaim_stale_jobs(self, stale_minutes: int = 120) -> tuple[int, int]:
         """Reclaim stale running jobs. Returns (requeued, failed)."""
         resp = self._post("/jobs/reclaim", data={"stale_minutes": stale_minutes})
