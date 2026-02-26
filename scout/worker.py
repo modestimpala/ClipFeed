@@ -271,6 +271,16 @@ def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -
                     except (TypeError, ValueError):
                         duration_seconds = None
 
+                # Capture extra metadata for richer LLM evaluation
+                description = (entry.get("description") or "").strip() or None
+                view_count = entry.get("view_count")
+                if view_count is not None:
+                    try:
+                        view_count = int(view_count)
+                    except (TypeError, ValueError):
+                        view_count = None
+                upload_date = (entry.get("upload_date") or "").strip() or None
+
                 exists = db.execute(
                     """
                     SELECT 1 FROM sources
@@ -289,8 +299,9 @@ def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -
                     db.execute(
                         """
                         INSERT INTO scout_candidates
-                        (id, scout_source_id, url, platform, external_id, title, channel_name, duration_seconds, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                        (id, scout_source_id, url, platform, external_id, title, channel_name,
+                         duration_seconds, description, view_count, upload_date, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                         """,
                         (
                             str(uuid.uuid4()),
@@ -301,6 +312,9 @@ def check_sources(db: sqlite3.Connection, source_ids: list[str] | None = None) -
                             title,
                             channel_name,
                             duration_seconds,
+                            description,
+                            view_count,
+                            upload_date,
                         ),
                     )
                     total_inserted += 1
@@ -457,7 +471,8 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
     cur = db.execute(
         """
         SELECT sc.id, sc.scout_source_id, sc.url, sc.platform, sc.external_id,
-               sc.title, sc.channel_name, sc.duration_seconds, sc.created_at,
+               sc.title, sc.channel_name, sc.duration_seconds,
+               sc.description, sc.view_count, sc.upload_date, sc.created_at,
                ss.user_id
         FROM scout_candidates sc
         JOIN scout_sources ss ON sc.scout_source_id = ss.id
@@ -562,10 +577,26 @@ def evaluate_candidates(db: sqlite3.Connection) -> None:
             title = row["title"] or ""
             channel = row["channel_name"] or ""
 
-            log.info("[LLM] Scoring candidate %s: title=%r channel=%r", cand_id[:8], title[:80], channel)
+            # Build video_metadata dict from stored candidate fields for richer LLM context
+            video_metadata: dict | None = None
+            vm_parts: dict = {}
+            if row["duration_seconds"] is not None:
+                vm_parts["duration_seconds"] = row["duration_seconds"]
+            if row["description"]:
+                vm_parts["description"] = row["description"]
+            if row["view_count"] is not None:
+                vm_parts["view_count"] = row["view_count"]
+            if row["upload_date"]:
+                vm_parts["upload_date"] = row["upload_date"]
+            if vm_parts:
+                video_metadata = vm_parts
+
+            log.info("[LLM] Scoring candidate %s: title=%r channel=%r has_metadata=%s",
+                     cand_id[:8], title[:80], channel, bool(video_metadata))
             score = llm_client.evaluate_candidate(
                 title, channel, profile["top_topics"],
                 user_profile=profile["profile_summary"],
+                video_metadata=video_metadata,
             )
             if score is None:
                 log.warning("[LLM] Candidate %s: evaluation failed (no score returned)", cand_id[:8])

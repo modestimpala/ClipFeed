@@ -333,6 +333,8 @@ class Worker:
                 # Pass platform info for HTTP mode (avoids extra DB query in process_segment)
                 segment_metadata["_platform"] = platform
                 segment_metadata["_channel_name"] = (source_metadata or {}).get("uploader") or (source_metadata or {}).get("channel") or ""
+                # Preserve full source metadata so LLM calls have rich context
+                segment_metadata["_source_metadata"] = source_metadata or {}
                 for i, seg in enumerate(segments):
                     clip_id = self.process_segment(
                         source_file, source_id, seg, i, work_path, segment_metadata
@@ -723,13 +725,13 @@ class Worker:
             log.info("Segment %d: transcript length=%d words", index, len(transcript.split()) if transcript else 0)
 
             # Generate a title from the transcript or source (reused for embedding context below)
-            title = self._generate_clip_title(transcript, metadata.get("title", ""), index)
+            title = self._generate_clip_title(transcript, metadata.get("title", ""), index, metadata)
 
             # Extract topics
             log.info("Segment %d: extracting topics via KeyBERT", index)
             topics = self._extract_topics(transcript, metadata.get("title", ""))
             log.info("Segment %d: KeyBERT topics=%s", index, topics)
-            topics = self._refine_topics_llm(transcript, topics)
+            topics = self._refine_topics_llm(transcript, topics, metadata)
 
             # Generate embeddings
             log.info("Segment %d: generating embeddings (text + visual)", index)
@@ -849,13 +851,14 @@ class Worker:
             log.warning(f"Transcription failed: {e}")
             return ""
 
-    def _generate_clip_title(self, transcript: str, source_title: str, index: int) -> str:
+    def _generate_clip_title(self, transcript: str, source_title: str, index: int, metadata: dict | None = None) -> str:
         """Generate a title via LLM if available, otherwise fall back to heuristics."""
         try:
             from llm_client import generate_title
             log.info("[LLM] Generating title for segment %d via LLM (source=%r, transcript_len=%d)",
                      index, source_title[:60] if source_title else "", len(transcript or ""))
-            llm_title = generate_title(transcript, source_title)
+            video_metadata = (metadata or {}).get("_source_metadata") or None
+            llm_title = generate_title(transcript, source_title, video_metadata=video_metadata)
             if llm_title and len(llm_title) > 3:
                 log.info("[LLM] Title generated for segment %d: %r", index, llm_title)
                 return llm_title
@@ -877,14 +880,15 @@ class Worker:
 
         return f"Clip {index + 1}"
 
-    def _refine_topics_llm(self, transcript: str, topics: list) -> list:
+    def _refine_topics_llm(self, transcript: str, topics: list, metadata: dict | None = None) -> list:
         """Optionally refine topics via LLM. Returns original on failure."""
         if not topics:
             return topics
         try:
             from llm_client import refine_topics
             log.info("[LLM] Refining topics via LLM: input=%s", topics)
-            refined = refine_topics(transcript, topics)
+            video_metadata = (metadata or {}).get("_source_metadata") or None
+            refined = refine_topics(transcript, topics, video_metadata=video_metadata)
             if refined and isinstance(refined, list):
                 log.info("[LLM] Topics refined: %s -> %s", topics, refined)
                 return refined

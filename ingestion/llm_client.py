@@ -411,20 +411,53 @@ def generate(
         return ""
 
 
-def generate_title(transcript: str, source_title: str = "") -> str:
+def _build_metadata_context(video_metadata: dict | None) -> str:
+    """Build a compact context string from video metadata for LLM prompts."""
+    if not video_metadata:
+        return ""
+    parts = []
+    channel = (video_metadata.get("uploader") or video_metadata.get("channel") or "").strip()
+    if channel:
+        parts.append(f"Channel: {channel}")
+    upload_date = (video_metadata.get("upload_date") or "").strip()
+    if upload_date and len(upload_date) == 8:
+        # yt-dlp format: YYYYMMDD -> YYYY-MM-DD
+        upload_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+    if upload_date:
+        parts.append(f"Published: {upload_date}")
+    view_count = video_metadata.get("view_count")
+    if view_count is not None:
+        parts.append(f"Views: {int(view_count):,}")
+    like_count = video_metadata.get("like_count")
+    if like_count is not None:
+        parts.append(f"Likes: {int(like_count):,}")
+    tags = video_metadata.get("tags")
+    if isinstance(tags, list) and tags:
+        parts.append(f"Tags: {', '.join(str(t) for t in tags[:10])}")
+    description = (video_metadata.get("description") or "").strip()
+    if description:
+        parts.append(f"Description: {description[:300]}")
+    return "\n".join(parts)
+
+
+def generate_title(transcript: str, source_title: str = "", video_metadata: dict | None = None) -> str:
     """
     Use LLM to generate a concise clip title.
+    video_metadata may include channel, description, tags, view_count, upload_date etc.
     Returns empty string on failure.
     """
-    logger.info("[LLM] Generating clip title: source_title=%r transcript_len=%d",
-                source_title[:60] if source_title else "", len(transcript or ""))
+    logger.info("[LLM] Generating clip title: source_title=%r transcript_len=%d has_metadata=%s",
+                source_title[:60] if source_title else "", len(transcript or ""), bool(video_metadata))
     excerpt = transcript[:500] if transcript else ""
+    meta_context = _build_metadata_context(video_metadata)
     prompt = (
         "Generate a concise, engaging title (5-10 words) for this video clip. "
         "Only respond with the title, no quotes or explanation.\n\n"
-        f"Source: {source_title}\n"
-        f"Transcript: {excerpt}"
+        f"Source title: {source_title}\n"
     )
+    if meta_context:
+        prompt += f"{meta_context}\n"
+    prompt += f"Transcript: {excerpt}"
     result = generate(prompt, max_tokens=64)
     if not result:
         logger.warning("[LLM] Title generation returned empty result")
@@ -434,22 +467,29 @@ def generate_title(transcript: str, source_title: str = "") -> str:
     return title
 
 
-def refine_topics(transcript: str, keybert_topics: list) -> list:
+def refine_topics(transcript: str, keybert_topics: list, video_metadata: dict | None = None) -> list:
     """
-    Send transcript excerpt and KeyBERT topics to LLM asking it to confirm/refine them
-    and suggest a parent category. Returns list of topic strings.
-    Returns original keybert_topics on failure.
+    Send transcript excerpt, KeyBERT topics and optional video metadata to LLM
+    asking it to confirm/refine topics and suggest a parent category.
+    video_metadata may include title, channel, description, tags etc.
+    Returns list of topic strings. Returns original keybert_topics on failure.
     """
-    logger.info("[LLM] Refining topics via LLM: keybert_topics=%s transcript_len=%d",
-                keybert_topics, len(transcript or ""))
+    logger.info("[LLM] Refining topics via LLM: keybert_topics=%s transcript_len=%d has_metadata=%s",
+                keybert_topics, len(transcript or ""), bool(video_metadata))
     topics_str = ", ".join(str(t) for t in keybert_topics) if keybert_topics else ""
     excerpt = transcript[:500] if transcript else ""
+    meta_context = _build_metadata_context(video_metadata)
+    source_title = (video_metadata or {}).get("title", "") if video_metadata else ""
     prompt = (
-        "Given this transcript excerpt, confirm or refine these topics: "
+        "Given this video clip, confirm or refine these topics: "
         f"{topics_str}. Also suggest a parent category for each. "
         "Respond as a JSON array of objects with 'topic' and 'parent' keys.\n\n"
-        f"Transcript: {excerpt}"
     )
+    if source_title:
+        prompt += f"Video title: {source_title}\n"
+    if meta_context:
+        prompt += f"{meta_context}\n"
+    prompt += f"Transcript: {excerpt}"
     result = generate(prompt, max_tokens=512)
     if not result:
         logger.warning("[LLM] Topic refinement returned empty -- keeping original topics: %s", keybert_topics)
@@ -485,17 +525,47 @@ def evaluate_candidate(
     channel: str,
     top_topics: list,
     user_profile: str | None = None,
+    video_metadata: dict | None = None,
 ) -> float | None:
     """
     Rate relevance 1-10 given user interests.
     If user_profile is provided, uses personalized scoring with the user's
     actual interests, favorite channels, and topic preferences.
+    video_metadata may include description, view_count, like_count, duration, tags, upload_date.
     Returns None on request/parse failure.
     """
-    logger.info("[LLM] Evaluating candidate: title=%r channel=%r profile=%s",
+    logger.info("[LLM] Evaluating candidate: title=%r channel=%r profile=%s has_metadata=%s",
                 title[:80] if title else "", channel,
-                (user_profile[:80] + "...") if user_profile and len(user_profile) > 80 else user_profile)
+                (user_profile[:80] + "...") if user_profile and len(user_profile) > 80 else user_profile,
+                bool(video_metadata))
     topics_str = ", ".join(str(t) for t in top_topics) if top_topics else "(none)"
+
+    # Build compact video detail block
+    video_details = ""
+    if video_metadata:
+        detail_parts = []
+        duration = video_metadata.get("duration_seconds") or video_metadata.get("duration")
+        if duration is not None:
+            detail_parts.append(f"Duration: {int(duration)}s")
+        view_count = video_metadata.get("view_count")
+        if view_count is not None:
+            detail_parts.append(f"Views: {int(view_count):,}")
+        like_count = video_metadata.get("like_count")
+        if like_count is not None:
+            detail_parts.append(f"Likes: {int(like_count):,}")
+        upload_date = (video_metadata.get("upload_date") or "").strip()
+        if upload_date and len(upload_date) == 8:
+            upload_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+        if upload_date:
+            detail_parts.append(f"Published: {upload_date}")
+        tags = video_metadata.get("tags")
+        if isinstance(tags, list) and tags:
+            detail_parts.append(f"Tags: {', '.join(str(t) for t in tags[:8])}")
+        description = (video_metadata.get("description") or "").strip()
+        if description:
+            detail_parts.append(f"Description: {description[:250]}")
+        if detail_parts:
+            video_details = "\n".join(detail_parts) + "\n"
 
     if user_profile:
         prompt = (
@@ -503,15 +573,18 @@ def evaluate_candidate(
             f"{user_profile}\n\n"
             f"Rate how likely this user would enjoy the following video on a scale of 1-10:\n"
             f"Title: '{title}'\n"
-            f"Channel: '{channel}'\n\n"
-            "Consider topic relevance, channel familiarity, and content style alignment. "
+            f"Channel: '{channel}'\n"
+            f"{video_details}"
+            "Consider topic relevance, channel familiarity, content style alignment, and video quality signals. "
             "A score of 10 means perfect match for this user's tastes, 1 means completely irrelevant. "
             "Reply with just the number."
         )
     else:
         prompt = (
             f"Given these user interests: {topics_str}. "
-            f"Rate 1-10 how relevant this video is: '{title}' by '{channel}'. "
+            f"Rate 1-10 how relevant this video is:\n"
+            f"Title: '{title}' by '{channel}'\n"
+            f"{video_details}"
             "Reply with just the number."
         )
 
