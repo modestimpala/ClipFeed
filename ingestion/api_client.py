@@ -1,8 +1,8 @@
 """
 ClipFeed Worker API Client
-HTTP client for the internal worker API, replacing direct SQLite access.
+HTTP client for the internal worker API.
 
-Enable by setting WORKER_MODE=http plus WORKER_API_URL and WORKER_SECRET.
+Requires WORKER_API_URL and WORKER_SECRET environment variables.
 """
 
 import base64

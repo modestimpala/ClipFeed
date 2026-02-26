@@ -9,7 +9,6 @@ import re
 import json
 import time
 import uuid
-import sqlite3
 import signal
 import logging
 import subprocess
@@ -37,7 +36,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("worker")
 
-DB_PATH = os.getenv("DB_PATH", "/data/clipfeed.db")
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
 MINIO_ACCESS = os.getenv("MINIO_ACCESS_KEY", "clipfeed")
 MINIO_SECRET = os.getenv("MINIO_SECRET_KEY", "changeme123")
@@ -49,10 +47,7 @@ FFMPEG_THREADS = os.getenv("FFMPEG_THREADS", "2")
 WHISPER_THREADS = int(os.getenv("WHISPER_THREADS", "4"))
 CLIP_TTL_DAYS = int(os.getenv("CLIP_TTL_DAYS", "30"))
 WORK_DIR = Path(os.getenv("WORK_DIR", "/tmp/clipfeed"))
-JWT_SECRET = os.getenv("JWT_SECRET", "supersecretkey")
 
-# HTTP worker mode (set WORKER_MODE=http to use the API instead of direct SQLite)
-WORKER_MODE = os.getenv("WORKER_MODE", "direct")  # 'direct' or 'http'
 WORKER_API_URL = os.getenv("WORKER_API_URL", "http://api:8080")
 WORKER_SECRET = os.getenv("WORKER_SECRET", "")
 
@@ -127,38 +122,17 @@ def _detect_device() -> tuple[str, str]:
     return "cpu", "int8"
 
 
-def open_db():
-    """Open a SQLite connection with WAL mode and row factory."""
-    db = sqlite3.connect(DB_PATH, isolation_level=None, check_same_thread=False)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=5000")
-    db.execute("PRAGMA foreign_keys=ON")
-    db.execute("PRAGMA synchronous=NORMAL")
-    db.row_factory = sqlite3.Row
-    return db
-
-
 class Worker:
-    # Defaults so object.__new__(Worker) used by tests gets sane values
-    http_mode = False
+    # Default so object.__new__(Worker) used by tests gets a sane value
     api = None
-    db = None
 
     def __init__(self):
-        self.http_mode = WORKER_MODE.lower() == "http"
-
-        if self.http_mode:
-            from api_client import WorkerAPIClient
-            if not WORKER_SECRET:
-                raise ValueError("WORKER_SECRET is required when WORKER_MODE=http")
-            self.api = WorkerAPIClient(WORKER_API_URL, WORKER_SECRET)
-            log.info("Worker HTTP mode: connecting to %s", WORKER_API_URL)
-            self.api.wait_for_api()
-            self.db = None
-        else:
-            # Main-thread connection used only for job popping
-            self.db = open_db()
-            self.api = None
+        from api_client import WorkerAPIClient
+        if not WORKER_SECRET:
+            raise ValueError("WORKER_SECRET is required")
+        self.api = WorkerAPIClient(WORKER_API_URL, WORKER_SECRET)
+        log.info("Worker connecting to API at %s", WORKER_API_URL)
+        self.api.wait_for_api()
 
         self.minio = Minio(
             MINIO_ENDPOINT,
@@ -183,9 +157,6 @@ class Worker:
         self._clip_preprocess = None
         self._clip_tokenizer = None
 
-        if not self.http_mode:
-            self._backfill_topic_graph()
-
     @staticmethod
     def _slugify(name: str) -> str:
         slug = name.lower().strip()
@@ -193,120 +164,12 @@ class Worker:
         slug = re.sub(r'[\s-]+', '-', slug)
         return slug.strip('-') or 'topic'
 
-    def _resolve_or_create_topic(self, db, name: str) -> str:
-        """Find or create a topic node within the current transaction, returning its ID."""
-        slug = self._slugify(name)
-        row = db.execute(
-            "SELECT id FROM topics WHERE slug = ? OR LOWER(name) = LOWER(?)",
-            (slug, name)
-        ).fetchone()
-        if row:
-            return row["id"]
-
-        topic_id = str(uuid.uuid4())
-        db.execute(
-            "INSERT OR IGNORE INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0)",
-            (topic_id, name, slug, slug)
-        )
-        row = db.execute("SELECT id FROM topics WHERE slug = ?", (slug,)).fetchone()
-        if row:
-            return row["id"]
-        return topic_id
-
-    def _backfill_topic_graph(self):
-        """One-time migration: seed topics table from existing clips.topics JSON arrays."""
-        db = open_db()
-        try:
-            existing = db.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
-            if existing > 0:
-                log.info(f"Topic graph already has {existing} nodes, skipping backfill")
-                return
-
-            rows = db.execute(
-                "SELECT id, topics FROM clips WHERE status = 'ready' AND topics != '[]'"
-            ).fetchall()
-
-            if not rows:
-                log.info("No clips to backfill topics from")
-                return
-
-            topic_ids = {}
-            clip_topic_pairs = []
-
-            for row in rows:
-                clip_id = row["id"]
-                try:
-                    topics = json.loads(row["topics"])
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                for name in topics:
-                    if not name:
-                        continue
-                    slug = self._slugify(name)
-                    if slug not in topic_ids:
-                        topic_ids[slug] = (str(uuid.uuid4()), name, slug)
-                    clip_topic_pairs.append((clip_id, topic_ids[slug][0]))
-
-            if not topic_ids:
-                return
-
-            db.execute("BEGIN IMMEDIATE")
-            for slug, (tid, name, _) in topic_ids.items():
-                db.execute(
-                    "INSERT OR IGNORE INTO topics (id, name, slug, path, depth) VALUES (?, ?, ?, ?, 0)",
-                    (tid, name, slug, slug)
-                )
-            for clip_id, topic_id in clip_topic_pairs:
-                db.execute(
-                    "INSERT OR IGNORE INTO clip_topics (clip_id, topic_id, confidence, source) VALUES (?, ?, 1.0, 'backfill')",
-                    (clip_id, topic_id)
-                )
-            db.execute("COMMIT")
-
-            log.info(f"Backfilled topic graph: {len(topic_ids)} topics, {len(clip_topic_pairs)} clip-topic links")
-        except Exception as e:
-            log.error(f"Topic backfill failed: {e}")
-            try:
-                db.execute("ROLLBACK")
-            except Exception:
-                pass
-        finally:
-            db.close()
-
     def _pop_job(self):
-        """Atomically claim one pending job. Returns dict-like object or None."""
-        if self.http_mode:
-            job = self.api.claim_job()
-            if job is None:
-                return None
-            # Return a dict that behaves like sqlite3.Row
-            return {"id": job["id"], "payload": json.dumps(job["payload"]) if isinstance(job["payload"], dict) else job["payload"]}
-        # Direct SQLite mode
-        try:
-            self.db.execute("BEGIN IMMEDIATE")
-            row = self.db.execute("""
-                UPDATE jobs
-                SET status = 'running',
-                    started_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-                    attempts = attempts + 1
-                WHERE id = (
-                    SELECT id FROM jobs
-                    WHERE status = 'queued'
-                      AND (run_after IS NULL
-                           OR run_after <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-                    ORDER BY priority DESC, created_at ASC
-                    LIMIT 1
-                )
-                RETURNING id, payload
-            """).fetchone()
-            self.db.execute("COMMIT")
-            return row
-        except Exception as e:
-            try:
-                self.db.execute("ROLLBACK")
-            except Exception:
-                pass
-            raise
+        """Atomically claim one pending job. Returns dict or None."""
+        job = self.api.claim_job()
+        if job is None:
+            return None
+        return {"id": job["id"], "payload": json.dumps(job["payload"]) if isinstance(job["payload"], dict) else job["payload"]}
 
     def run(self):
         log.info(f"Worker started (max_concurrent={MAX_CONCURRENT})")
@@ -357,99 +220,24 @@ class Worker:
     def _reclaim_stale_running_jobs(self) -> tuple[int, int]:
         """
         Reclaim jobs stuck in 'running' beyond JOB_STALE_MINUTES.
-        - jobs with attempts < max_attempts are re-queued
-        - jobs at max attempts are marked failed
         Returns: (requeued_count, failed_count)
         """
-        if self.http_mode:
-            return self.api.reclaim_stale_jobs(JOB_STALE_MINUTES)
+        return self.api.reclaim_stale_jobs(JOB_STALE_MINUTES)
 
-        cutoff = f"-{JOB_STALE_MINUTES} minutes"
-        stale_msg = f"stale watchdog: recovered running job older than {JOB_STALE_MINUTES}m"
-        try:
-            self.db.execute("BEGIN IMMEDIATE")
-
-            requeued = self.db.execute(
-                """
-                UPDATE jobs
-                SET status = 'queued',
-                    run_after = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-                    error = CASE
-                        WHEN error IS NULL OR error = '' THEN ?
-                        ELSE error || ' | ' || ?
-                    END
-                WHERE status = 'running'
-                  AND started_at IS NOT NULL
-                  AND datetime(started_at) <= datetime('now', ?)
-                  AND attempts < max_attempts
-                RETURNING id, source_id
-                """,
-                (stale_msg, stale_msg, cutoff),
-            ).fetchall()
-
-            failed = self.db.execute(
-                """
-                UPDATE jobs
-                SET status = 'failed',
-                    completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-                    error = CASE
-                        WHEN error IS NULL OR error = '' THEN ?
-                        ELSE error || ' | ' || ?
-                    END
-                WHERE status = 'running'
-                  AND started_at IS NOT NULL
-                  AND datetime(started_at) <= datetime('now', ?)
-                  AND attempts >= max_attempts
-                RETURNING id, source_id
-                """,
-                (stale_msg, stale_msg, cutoff),
-            ).fetchall()
-
-            for row in requeued:
-                source_id = row["source_id"]
-                if source_id:
-                    self.db.execute(
-                        "UPDATE sources SET status = 'pending' WHERE id = ?",
-                        (source_id,),
-                    )
-
-            for row in failed:
-                source_id = row["source_id"]
-                if source_id:
-                    self.db.execute(
-                        "UPDATE sources SET status = 'failed' WHERE id = ?",
-                        (source_id,),
-                    )
-
-            self.db.execute("COMMIT")
-            return len(requeued), len(failed)
-        except Exception:
-            try:
-                self.db.execute("ROLLBACK")
-            except Exception:
-                pass
-            return 0, 0
-
-    def _check_cancelled(self, db, job_id: str):
+    def _check_cancelled(self, job_id: str):
         """Check if a job has been cancelled by the user. Raises JobCancelled if so."""
-        if self.http_mode:
-            info = self.api.get_job(job_id)
-            if info and info.get("status") == "cancelled":
-                raise JobCancelled(f"Job {job_id} cancelled by user")
-        else:
-            row = db.execute("SELECT status FROM jobs WHERE id = ?", (job_id,)).fetchone()
-            if row and row["status"] == "cancelled":
-                raise JobCancelled(f"Job {job_id} cancelled by user")
+        info = self.api.get_job(job_id)
+        if info and info.get("status") == "cancelled":
+            raise JobCancelled(f"Job {job_id} cancelled by user")
 
     def process_job(self, job_id: str, payload: dict):
-        """Process a job. Uses HTTP API or direct SQLite depending on mode."""
-        db = None if self.http_mode else open_db()
+        """Process a single ingestion job via the HTTP API."""
         try:
             source_id = payload.get("source_id")
             platform = payload.get("platform", "")
             url = payload.get("url", "")
 
-            self._update_source(db, source_id, status="downloading")
+            self._update_source(source_id, status="downloading")
 
             work_path = WORK_DIR / job_id
             work_path.mkdir(parents=True, exist_ok=True)
@@ -458,7 +246,7 @@ class Worker:
                 # Fetch platform cookie if applicable
                 cookie_str = None
                 if platform in ("youtube", "tiktok", "instagram", "twitter"):
-                    cookie_str = self._get_cookie(db, source_id, platform)
+                    cookie_str = self._get_cookie(source_id, platform)
                     if cookie_str:
                         log.info("Job %s: using platform cookie for %s", job_id[:8], platform)
 
@@ -471,7 +259,7 @@ class Worker:
                         raise VideoRejected(f"Video too long ({duration}s, max {MAX_VIDEO_DURATION}s)")
 
                     try:
-                        self._update_source(db, source_id,
+                        self._update_source(source_id,
                             external_id=source_metadata.get("id"),
                             title=source_metadata.get("title"),
                             channel_name=source_metadata.get("uploader") or source_metadata.get("channel"),
@@ -485,7 +273,7 @@ class Worker:
                             # Another source already has this external_id -- skip it and continue
                             log.warning("Job %s: external_id %s already exists for platform %s, skipping external_id update",
                                         job_id[:8], source_metadata.get("id"), platform)
-                            self._update_source(db, source_id,
+                            self._update_source(source_id,
                                 title=source_metadata.get("title"),
                                 channel_name=source_metadata.get("uploader") or source_metadata.get("channel"),
                                 thumbnail_url=source_metadata.get("thumbnail"),
@@ -496,34 +284,34 @@ class Worker:
                             raise
 
                 # Step 1: Download
-                self._check_cancelled(db, job_id)
+                self._check_cancelled(job_id)
                 log.info("Job %s: [step 1/4] downloading video", job_id[:8])
                 dl_start = time.time()
                 source_file = self.download(url, work_path, cookie_str=cookie_str)
                 log.info("Job %s: download complete in %.1fs -- %s", job_id[:8], time.time() - dl_start, source_file.name)
-                self._update_source(db, source_id, status="processing")
+                self._update_source(source_id, status="processing")
 
                 # Step 2: Extract metadata
-                self._check_cancelled(db, job_id)
+                self._check_cancelled(job_id)
                 log.info("Job %s: [step 2/4] extracting media metadata", job_id[:8])
                 media_metadata = self.extract_metadata(source_file)
                 merged_metadata = dict(source_metadata) if source_metadata else {}
                 if media_metadata:
                     merged_metadata["media_probe"] = media_metadata
-                self._update_source(db, source_id,
+                self._update_source(source_id,
                     title=(source_metadata or {}).get("title") or media_metadata.get("title"),
                     duration_seconds=(source_metadata or {}).get("duration") or media_metadata.get("duration"),
                     metadata=json.dumps(merged_metadata),
                 )
 
                 # Step 3: Detect scenes and split
-                self._check_cancelled(db, job_id)
+                self._check_cancelled(job_id)
                 log.info("Job %s: [step 3/4] detecting scenes (duration=%.1fs)", job_id[:8], media_metadata.get("duration", 0))
                 segments = self.detect_scenes(source_file, media_metadata.get("duration", 0))
                 log.info("Job %s: detected %d segments", job_id[:8], len(segments))
 
                 # Step 4: Process each segment
-                self._check_cancelled(db, job_id)
+                self._check_cancelled(job_id)
                 log.info("Job %s: [step 4/4] processing %d segments (transcode, transcribe, embed, upload)", job_id[:8], len(segments))
                 clip_ids = []
                 segment_metadata = dict(media_metadata)
@@ -534,28 +322,28 @@ class Worker:
                 segment_metadata["_channel_name"] = (source_metadata or {}).get("uploader") or (source_metadata or {}).get("channel") or ""
                 for i, seg in enumerate(segments):
                     clip_id = self.process_segment(
-                        db, source_file, source_id, seg, i, work_path, segment_metadata
+                        source_file, source_id, seg, i, work_path, segment_metadata
                     )
                     if clip_id:
                         clip_ids.append(clip_id)
 
                 # Mark source complete
-                self._update_source(db, source_id, status="complete")
+                self._update_source(source_id, status="complete")
 
                 # Mark job complete
-                self._complete_job(db, job_id, clip_ids)
+                self._complete_job(job_id, clip_ids)
                 log.info("Job %s complete: %d clips created from %s", job_id[:8], len(clip_ids), url[:80])
 
             except VideoRejected as e:
                 log.info("Job %s rejected: %s", job_id[:8], e)
-                self._fail_or_reject_job(db, job_id, source_id, str(e), rejected=True)
+                self._fail_or_reject_job(job_id, source_id, str(e), rejected=True)
 
             except JobCancelled:
                 log.info("Job %s cancelled by user", job_id[:8])
                 # Job status already set to 'cancelled' by the API; just clean up
 
             except Exception as e:
-                self._handle_job_error(db, job_id, source_id, e)
+                self._handle_job_error(job_id, source_id, e)
 
             finally:
                 # Cleanup working directory
@@ -563,83 +351,33 @@ class Worker:
 
         except Exception as e:
             log.error(f"Fatal error processing job {job_id}: {e}")
-        finally:
-            if db:
-                db.close()
 
-    # --- DB/API abstraction helpers ---
+    # --- API helpers ---
 
-    _ALLOWED_SOURCE_COLUMNS = frozenset({
-        'status', 'title', 'channel_name', 'platform', 'duration_seconds',
-        'error', 'thumbnail_url', 'last_checked_at', 'check_interval_hours',
-        'force_check', 'external_id', 'metadata',
-    })
+    def _update_source(self, source_id, **fields):
+        """Update source via HTTP API."""
+        self.api.update_source(source_id, **fields)
 
-    def _update_source(self, db, source_id, **fields):
-        """Update source via direct DB or HTTP API."""
-        if self.http_mode:
-            self.api.update_source(source_id, **fields)
-        else:
-            sets, vals = [], []
-            for k, v in fields.items():
-                if k not in self._ALLOWED_SOURCE_COLUMNS:
-                    raise ValueError(f"disallowed column in _update_source: {k}")
-                sets.append(f"{k} = ?")
-                vals.append(v)
-            vals.append(source_id)
-            db.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ?", vals)
-
-    def _get_cookie(self, db, source_id, platform):
+    def _get_cookie(self, source_id, platform):
         """Get decrypted platform cookie."""
-        if self.http_mode:
-            return self.api.get_cookie(source_id, platform)
-        row = db.execute("""
-            SELECT cookie_str FROM platform_cookies
-            WHERE user_id = (SELECT submitted_by FROM sources WHERE id = ?)
-              AND platform = ? AND is_active = 1
-        """, (source_id, platform)).fetchone()
-        if row:
-            return decrypt_cookie(row["cookie_str"], JWT_SECRET)
-        return None
+        return self.api.get_cookie(source_id, platform)
 
-    def _complete_job(self, db, job_id, clip_ids):
+    def _complete_job(self, job_id, clip_ids):
         """Mark a job as complete."""
-        if self.http_mode:
-            self.api.update_job(job_id, "complete",
-                result={"clip_ids": clip_ids, "clip_count": len(clip_ids)})
-        else:
-            db.execute(
-                "UPDATE jobs SET status = 'complete', completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), result = ? WHERE id = ?",
-                (json.dumps({"clip_ids": clip_ids, "clip_count": len(clip_ids)}), job_id),
-            )
+        self.api.update_job(job_id, "complete",
+            result={"clip_ids": clip_ids, "clip_count": len(clip_ids)})
 
-    def _fail_or_reject_job(self, db, job_id, source_id, error_msg, rejected=False):
+    def _fail_or_reject_job(self, job_id, source_id, error_msg, rejected=False):
         """Mark a job as rejected or failed (terminal)."""
         status = "rejected" if rejected else "failed"
-        if self.http_mode:
-            self.api.update_job(job_id, status, error=error_msg)
-            self.api.update_source(source_id, status=status)
-        else:
-            db.execute(
-                "UPDATE jobs SET status = ?, error = ?, completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                (status, error_msg, job_id),
-            )
-            db.execute(
-                "UPDATE sources SET status = ? WHERE id = ?", (status, source_id)
-            )
+        self.api.update_job(job_id, status, error=error_msg)
+        self.api.update_source(source_id, status=status)
 
-    def _handle_job_error(self, db, job_id, source_id, error):
+    def _handle_job_error(self, job_id, source_id, error):
         """Handle a transient job error: retry or permanently fail."""
-        if self.http_mode:
-            job_info = self.api.get_job(job_id)
-            attempts = job_info.get("attempts", 0)
-            max_attempts = job_info.get("max_attempts", 3)
-        else:
-            job_row = db.execute(
-                "SELECT attempts, max_attempts FROM jobs WHERE id = ?", (job_id,)
-            ).fetchone()
-            attempts = job_row["attempts"] if job_row else 0
-            max_attempts = job_row["max_attempts"] if job_row else 3
+        job_info = self.api.get_job(job_id)
+        attempts = job_info.get("attempts", 0)
+        max_attempts = job_info.get("max_attempts", 3)
 
         if attempts < max_attempts:
             delay = RETRY_BASE_DELAY * (2 ** (attempts - 1))
@@ -650,32 +388,14 @@ class Worker:
                 f"Job {job_id} attempt {attempts}/{max_attempts} failed, "
                 f"retrying in {delay}s: {error}"
             )
-            if self.http_mode:
-                self.api.update_job(job_id, "queued", error=str(error), run_after=run_after)
-                self.api.update_source(source_id, status="pending")
-            else:
-                db.execute(
-                    "UPDATE jobs SET status = 'queued', error = ?, run_after = ? WHERE id = ?",
-                    (str(error), run_after, job_id),
-                )
-                db.execute(
-                    "UPDATE sources SET status = 'pending' WHERE id = ?", (source_id,)
-                )
+            self.api.update_job(job_id, "queued", error=str(error), run_after=run_after)
+            self.api.update_source(source_id, status="pending")
         else:
             log.error(
                 f"Job {job_id} permanently failed after {attempts} attempts: {error}"
             )
-            if self.http_mode:
-                self.api.update_job(job_id, "failed", error=str(error))
-                self.api.update_source(source_id, status="failed")
-            else:
-                db.execute(
-                    "UPDATE jobs SET status = 'failed', error = ? WHERE id = ?",
-                    (str(error), job_id),
-                )
-                db.execute(
-                    "UPDATE sources SET status = 'failed' WHERE id = ?", (source_id,)
-                )
+            self.api.update_job(job_id, "failed", error=str(error))
+            self.api.update_source(source_id, status="failed")
 
     def download(self, url: str, work_path: Path, cookie_str: str = None) -> Path:
         """Download video using yt-dlp."""
@@ -962,18 +682,8 @@ class Worker:
             log.warning(f"Topic extraction failed: {e}")
             return []
 
-    def _index_clip_fts(self, db, clip_id, title, transcript, platform, channel_name):
-        """Insert into FTS5 table (replaces Meilisearch)."""
-        try:
-            db.execute(
-                "INSERT INTO clips_fts(clip_id, title, transcript, platform, channel_name) VALUES (?, ?, ?, ?, ?)",
-                (clip_id, title or '', (transcript or '')[:2000], platform or '', channel_name or ''),
-            )
-        except Exception as e:
-            log.warning(f"FTS index failed for {clip_id}: {e}")
-
     def process_segment(
-        self, db, source_file: Path, source_id: str,
+        self, source_file: Path, source_id: str,
         segment: dict, index: int, work_path: Path, metadata: dict
     ) -> str:
         """Process a single clip segment: transcode, thumbnail, transcribe, upload."""
@@ -1028,84 +738,39 @@ class Worker:
 
             expires_at = (datetime.utcnow() + timedelta(days=CLIP_TTL_DAYS)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-            # Get platform/channel from metadata (passed from process_job) or DB
             platform = metadata.get("_platform", "")
             channel_name = metadata.get("_channel_name", "")
-            if not platform and db:
-                row = db.execute("SELECT platform, channel_name FROM sources WHERE id = ?", (source_id,)).fetchone()
-                platform = row["platform"] if row else ""
-                channel_name = row["channel_name"] if row else ""
 
             content_score = 0.5
 
-            if self.http_mode:
-                # Single API call creates clip + topics + embeddings + FTS
-                self.api.create_clip(
-                    clip_id=clip_id,
-                    source_id=source_id,
-                    title=title,
-                    duration_seconds=duration,
-                    start_time=start,
-                    end_time=end,
-                    storage_key=clip_key,
-                    thumbnail_key=thumb_key,
-                    width=clip_meta.get("width", 0),
-                    height=clip_meta.get("height", 0),
-                    file_size_bytes=file_size,
-                    transcript=transcript,
-                    topics=topics,
-                    content_score=content_score,
-                    expires_at=expires_at,
-                    platform=platform,
-                    channel_name=channel_name,
-                    text_embedding=text_emb,
-                    visual_embedding=visual_emb,
-                    model_version="minilm-v2+clip-vit-b32",
-                )
-            else:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("""
-                    INSERT INTO clips (
-                        id, source_id, title, duration_seconds, start_time, end_time,
-                        storage_key, thumbnail_key, width, height, file_size_bytes,
-                        transcript, topics, content_score, expires_at, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready')
-                """, (
-                    clip_id, source_id, title, duration, start, end,
-                    clip_key, thumb_key,
-                    clip_meta.get("width", 0), clip_meta.get("height", 0),
-                    file_size, transcript, json.dumps(topics), content_score, expires_at,
-                ))
-
-                for topic_name in topics:
-                    try:
-                        topic_id = self._resolve_or_create_topic(db, topic_name)
-                        db.execute(
-                            "INSERT OR IGNORE INTO clip_topics (clip_id, topic_id, confidence, source) VALUES (?, ?, 1.0, 'keybert')",
-                            (clip_id, topic_id)
-                        )
-                    except Exception as e:
-                        log.warning(f"Failed to link clip {clip_id} to topic {topic_name}: {e}")
-
-                self._index_clip_fts(db, clip_id, title, transcript, platform, channel_name)
-
-                if text_emb or visual_emb:
-                    db.execute(
-                        "INSERT OR REPLACE INTO clip_embeddings (clip_id, text_embedding, visual_embedding, model_version) VALUES (?, ?, ?, ?)",
-                        (clip_id, text_emb, visual_emb, "minilm-v2+clip-vit-b32"),
-                    )
-
-                db.execute("COMMIT")
+            # Single API call creates clip + topics + embeddings + FTS
+            self.api.create_clip(
+                clip_id=clip_id,
+                source_id=source_id,
+                title=title,
+                duration_seconds=duration,
+                start_time=start,
+                end_time=end,
+                storage_key=clip_key,
+                thumbnail_key=thumb_key,
+                width=clip_meta.get("width", 0),
+                height=clip_meta.get("height", 0),
+                file_size_bytes=file_size,
+                transcript=transcript,
+                topics=topics,
+                content_score=content_score,
+                expires_at=expires_at,
+                platform=platform,
+                channel_name=channel_name,
+                text_embedding=text_emb,
+                visual_embedding=visual_emb,
+                model_version="minilm-v2+clip-vit-b32",
+            )
 
             log.info(f"Clip {clip_id} created ({duration:.1f}s, topics={topics})")
             return clip_id
 
         except Exception as e:
-            if db:
-                try:
-                    db.execute("ROLLBACK")
-                except Exception:
-                    pass
             log.error(f"Failed to process segment {index}: {e}")
             return None
 

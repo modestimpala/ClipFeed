@@ -110,8 +110,6 @@ services:
       timeout: 10s
       retries: 3
     environment:
-      DB_PATH: /data/clipfeed.db
-      WORKER_MODE: ${WORKER_MODE:-http}
       WORKER_API_URL: ${WORKER_API_URL:-http://api:8080}
       WORKER_SECRET: ${WORKER_SECRET:-}
       MINIO_ENDPOINT: minio:9000
@@ -119,7 +117,6 @@ services:
       MINIO_SECRET_KEY: ${MINIO_PASSWORD:-changeme123}
       MINIO_BUCKET: clips
       MINIO_USE_SSL: "false"
-      JWT_SECRET: ${JWT_SECRET:-supersecretkey}
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       MAX_CONCURRENT_JOBS: ${MAX_WORKERS:-2}
       FFMPEG_THREADS: ${FFMPEG_THREADS:-2}
@@ -134,7 +131,6 @@ services:
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       ENABLE_AI: ${ENABLE_AI:-false}
     volumes:
-      - db_data:/data
       - worker_tmp:/tmp/clipfeed
     cap_drop:
       - ALL
