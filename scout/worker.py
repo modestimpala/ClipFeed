@@ -687,10 +687,10 @@ def auto_approve(db: sqlite3.Connection) -> None:
             db.execute("SAVEPOINT ingest_candidate")
             db.execute(
                 """
-                INSERT INTO sources (id, url, platform, external_id, title, channel_name, duration_seconds, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                INSERT INTO sources (id, url, platform, external_id, title, channel_name, duration_seconds, submitted_by, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                 """,
-                (source_id, url, platform, external_id, title, channel_name, duration_seconds),
+                (source_id, url, platform, external_id, title, channel_name, duration_seconds, user_id),
             )
             db.execute(
                 """
