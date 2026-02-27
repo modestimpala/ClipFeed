@@ -18,6 +18,7 @@ import ipaddress
 from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
+import threading
 from concurrent.futures import ThreadPoolExecutor
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -187,6 +188,7 @@ class Worker:
         self._clip_model = None
         self._clip_preprocess = None
         self._clip_tokenizer = None
+        self._clip_lock = threading.Lock()
 
     @staticmethod
     def _slugify(name: str) -> str:
@@ -644,21 +646,24 @@ class Worker:
         return np.array(vec, dtype=np.float32).tobytes()
 
     def _ensure_clip_model(self):
-        """Lazy-load CLIP ViT-B-32 on first use."""
+        """Lazy-load CLIP ViT-B-32 on first use (thread-safe)."""
         if self._clip_model is not None:
             return
-        try:
-            import open_clip
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                'ViT-B-32', pretrained='laion2b_s34b_b79k'
-            )
-            model.eval()
-            self._clip_model = model
-            self._clip_preprocess = preprocess
-            self._clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
-            log.info("CLIP ViT-B-32 model loaded")
-        except Exception as e:
-            log.warning(f"CLIP model load failed (visual embeddings disabled): {e}")
+        with self._clip_lock:
+            if self._clip_model is not None:
+                return
+            try:
+                import open_clip
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    'ViT-B-32', pretrained='laion2b_s34b_b79k'
+                )
+                model.eval()
+                self._clip_model = model
+                self._clip_preprocess = preprocess
+                self._clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
+                log.info("CLIP ViT-B-32 model loaded")
+            except Exception as e:
+                log.warning(f"CLIP model load failed (visual embeddings disabled): {e}")
 
     def _extract_keyframes(self, clip_path: Path, n: int = 3) -> list:
         """Extract n keyframes from a clip at evenly-spaced timestamps."""
