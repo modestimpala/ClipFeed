@@ -14,7 +14,9 @@ import logging
 import subprocess
 import hashlib
 import base64
+import ipaddress
 from pathlib import Path
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 try:
@@ -67,6 +69,32 @@ JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "15"))
 HEARTBEAT_INTERVAL = 30  # seconds between heartbeat pings for running jobs
 
 shutdown = False
+
+
+def validate_url(url: str) -> None:
+    """Reject URLs targeting internal/private networks (SSRF protection)."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https", ""):
+        raise VideoRejected(f"Blocked URL scheme: {parsed.scheme}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise VideoRejected(f"No hostname in URL: {url}")
+
+    # Block obvious internal hostnames
+    _blocked = {"localhost", "minio", "api", "worker", "llm", "scout", "nginx", "proxy", "web"}
+    if hostname.lower() in _blocked:
+        raise VideoRejected(f"Blocked internal hostname: {hostname}")
+
+    # Resolve and block private/reserved IP ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise VideoRejected(f"Blocked private/reserved IP: {hostname}")
+    except ValueError:
+        # Not a bare IP -- check for suspicious patterns
+        if hostname.endswith(".internal") or hostname.endswith(".local"):
+            raise VideoRejected(f"Blocked internal hostname: {hostname}")
 
 
 class JobCancelled(Exception):
@@ -414,6 +442,7 @@ class Worker:
 
     def download(self, url: str, work_path: Path, cookie_str: str = None) -> Path:
         """Download video using yt-dlp."""
+        validate_url(url)
         output_template = str(work_path / "source.%(ext)s")
 
         cmd = [
@@ -455,6 +484,7 @@ class Worker:
 
     def fetch_source_metadata(self, url: str, work_path: Path, cookie_str: str = None) -> dict:
         """Fetch source metadata with yt-dlp without downloading media."""
+        validate_url(url)
         cmd = [
             "yt-dlp",
             "--no-playlist",
