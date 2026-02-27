@@ -199,6 +199,14 @@ No app store needed.
 
 ClipFeed includes a hidden system status dashboard for monitoring and maintenance.
 
+<table><tr>
+<td valign="top">
+  <p><img src="./media/img/admin1.JPG" width="150" /></p>
+  <p><img src="./media/img/admin2.JPG" width="150" /></p>
+  <p><img src="./media/img/admin3.JPG" width="150" /></p>
+</td>
+<td valign="top">
+
 - **Access**: Navigate to `/admin` in your browser.
 - **Authentication**: Uses separate credentials defined in your `.env` file (`ADMIN_USERNAME` and `ADMIN_PASSWORD`).
 - **Features**:
@@ -210,6 +218,9 @@ ClipFeed includes a hidden system status dashboard for monitoring and maintenanc
     - **LLM Logs**: View raw prompts and responses for every LLM interaction to debug discovery and summarization.
     - **Failure Analysis**: Review error messages for failed ingestion jobs and clear the queue.
     - **Activity Charts**: Visual 7-day history of clip ingestion and user engagement.
+
+</td>
+</tr></table>
 
 ## API Endpoints
 
@@ -344,10 +355,7 @@ Both options work. Option B uses Anthropic's OpenAI SDK compatibility layer, whi
 
 ## Roadmap
 
-- [x] Phase 1: Core pipeline -- ingest, split, serve, basic feed
-- [x] Phase 2: Algorithm engine -- topic graph, L2R embeddings, preference UI, collections
-- [x] Phase 3: Search (FTS5), saved filters, platform cookies, clip summaries, Scout
-- [x] Phase 4: Multi-user (auth, per-user preferences/embeddings/collections)
-
-Possible future directions: sharing, federation, public collections.
-TikTokApi (Playwright-based) / instagrapi for feed?
+- [ ] Frontend polish and expanded Scout sources
+- [ ] Truly infinite feed
+- [ ] Sharing, public collections
+- [ ] TikTok/Instagram feed integration (TikTokApi, instagrapi)

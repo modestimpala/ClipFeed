@@ -16,3 +16,4 @@ build/
 go.sum
 .worktrees/
 .cache/
+.vscode/
