@@ -63,6 +63,7 @@ var defaultSecrets = map[string]string{
 	"JWT_SECRET":       "supersecretkey",
 	"MINIO_SECRET_KEY": "changeme123",
 	"ADMIN_PASSWORD":   "changeme_admin_password",
+	"WORKER_SECRET":    "",
 }
 
 func loadConfig() Config {

@@ -14,8 +14,11 @@ import logging
 import subprocess
 import hashlib
 import base64
+import ipaddress
 from pathlib import Path
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
+import threading
 from concurrent.futures import ThreadPoolExecutor
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -67,6 +70,32 @@ JOB_STALE_MINUTES = int(os.getenv("JOB_STALE_MINUTES", "15"))
 HEARTBEAT_INTERVAL = 30  # seconds between heartbeat pings for running jobs
 
 shutdown = False
+
+
+def validate_url(url: str) -> None:
+    """Reject URLs targeting internal/private networks (SSRF protection)."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https", ""):
+        raise VideoRejected(f"Blocked URL scheme: {parsed.scheme}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise VideoRejected(f"No hostname in URL: {url}")
+
+    # Block obvious internal hostnames
+    _blocked = {"localhost", "minio", "api", "worker", "llm", "scout", "nginx", "proxy", "web"}
+    if hostname.lower() in _blocked:
+        raise VideoRejected(f"Blocked internal hostname: {hostname}")
+
+    # Resolve and block private/reserved IP ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            raise VideoRejected(f"Blocked private/reserved IP: {hostname}")
+    except ValueError:
+        # Not a bare IP -- check for suspicious patterns
+        if hostname.endswith(".internal") or hostname.endswith(".local"):
+            raise VideoRejected(f"Blocked internal hostname: {hostname}")
 
 
 class JobCancelled(Exception):
@@ -159,6 +188,7 @@ class Worker:
         self._clip_model = None
         self._clip_preprocess = None
         self._clip_tokenizer = None
+        self._clip_lock = threading.Lock()
 
     @staticmethod
     def _slugify(name: str) -> str:
@@ -414,6 +444,7 @@ class Worker:
 
     def download(self, url: str, work_path: Path, cookie_str: str = None) -> Path:
         """Download video using yt-dlp."""
+        validate_url(url)
         output_template = str(work_path / "source.%(ext)s")
 
         cmd = [
@@ -455,6 +486,7 @@ class Worker:
 
     def fetch_source_metadata(self, url: str, work_path: Path, cookie_str: str = None) -> dict:
         """Fetch source metadata with yt-dlp without downloading media."""
+        validate_url(url)
         cmd = [
             "yt-dlp",
             "--no-playlist",
@@ -614,21 +646,24 @@ class Worker:
         return np.array(vec, dtype=np.float32).tobytes()
 
     def _ensure_clip_model(self):
-        """Lazy-load CLIP ViT-B-32 on first use."""
+        """Lazy-load CLIP ViT-B-32 on first use (thread-safe)."""
         if self._clip_model is not None:
             return
-        try:
-            import open_clip
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                'ViT-B-32', pretrained='laion2b_s34b_b79k'
-            )
-            model.eval()
-            self._clip_model = model
-            self._clip_preprocess = preprocess
-            self._clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
-            log.info("CLIP ViT-B-32 model loaded")
-        except Exception as e:
-            log.warning(f"CLIP model load failed (visual embeddings disabled): {e}")
+        with self._clip_lock:
+            if self._clip_model is not None:
+                return
+            try:
+                import open_clip
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    'ViT-B-32', pretrained='laion2b_s34b_b79k'
+                )
+                model.eval()
+                self._clip_model = model
+                self._clip_preprocess = preprocess
+                self._clip_tokenizer = open_clip.get_tokenizer('ViT-B-32')
+                log.info("CLIP ViT-B-32 model loaded")
+            except Exception as e:
+                log.warning(f"CLIP model load failed (visual embeddings disabled): {e}")
 
     def _extract_keyframes(self, clip_path: Path, n: int = 3) -> list:
         """Extract n keyframes from a clip at evenly-spaced timestamps."""

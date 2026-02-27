@@ -26,7 +26,7 @@ func (h *Handler) HandleListJobs(w http.ResponseWriter, r *http.Request) {
 		       j.attempts, j.max_attempts, j.started_at, j.completed_at, j.created_at,
 		       s.url, s.platform, s.title, s.channel_name, s.thumbnail_url, s.external_id, s.metadata
 		FROM jobs j
-		LEFT JOIN sources s ON j.source_id = s.id
+		JOIN sources s ON j.source_id = s.id
 		WHERE s.submitted_by = ?
 		ORDER BY j.created_at DESC LIMIT 50
 	`, userID)
@@ -77,7 +77,7 @@ func (h *Handler) HandleGetJob(w http.ResponseWriter, r *http.Request) {
 	err := h.DB.QueryRowContext(r.Context(), `
 		SELECT j.id, j.source_id, j.job_type, j.status, j.payload, j.result, j.error, j.created_at
 		FROM jobs j
-		LEFT JOIN sources s ON j.source_id = s.id
+		JOIN sources s ON j.source_id = s.id
 		WHERE j.id = ? AND s.submitted_by = ?
 	`, jobID, userID).Scan(&id, &sourceID, &jobType, &status, &payloadStr, &resultStr, &errMsg, &createdAt)
 	if err != nil {
